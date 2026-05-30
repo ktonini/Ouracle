@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from datetime import date, datetime, timedelta
 
+from backend.src.insights import sync_freshness as sf_module
 from backend.src.insights.action_cards import build_action_cards
 from backend.src.models import (
     Activity,
@@ -85,6 +86,22 @@ def test_hrv_drop_card_uses_14d_baseline(db_session):
 
     cards = build_action_cards(db_session, day)
     assert any(c.id.startswith("hrv-drop-") for c in cards)
+
+
+def test_stale_sync_card_uses_expected_day_not_calendar_today(db_session, monkeypatch):
+    """Matches sync_freshness: tonight's sleep is not counted as missing."""
+
+    today = date(2026, 5, 29)
+    monkeypatch.setattr(sf_module, "date", type("D", (), {"today": staticmethod(lambda: today)})())
+
+    latest = today - timedelta(days=3)  # 2026-05-26
+    db_session.add(Sleep(id="s", day=latest, score=80))
+    db_session.commit()
+
+    cards = build_action_cards(db_session, today)
+    sync_card = next(c for c in cards if c.id.startswith("sync-stale-"))
+    assert "2 days behind" in sync_card.title
+    assert "2026-05-28" in sync_card.reason
 
 
 def test_card_results_are_capped_to_five(db_session):

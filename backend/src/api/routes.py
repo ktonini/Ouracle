@@ -17,6 +17,8 @@ from sqlalchemy import select, func
 # Constants and Configuration
 from ..config import config_manager
 from ..database import get_db, SessionLocal
+from ..ingestion.runner import ingest_zip_async
+from ..sync_recovery import PROCESSING_STATUSES, recover_stuck_sync_if_needed
 from ..models import (
     Sleep, Activity, Readiness, Resilience, SleepSession, Workout, Meditation, 
     RingBattery, HeartRate, Temperature, RingConfiguration, Tag, CardiovascularAge,
@@ -123,10 +125,20 @@ async def run_full_sync_task(db_session_factory):
     3. Download the export zip.
     4. Ingest data into the local SQLite database.
     """
+    del db_session_factory  # ingest opens its own DB session off the event loop
     config_manager.update_status("Processing", message="Starting full sync...")
     waiting_for_otp = False
+    need_fresh_export = False
     try:
-        # Create temp dir for the download
+        cfg = config_manager.get_config()
+        if automator._is_initialized:
+            try:
+                await automator.cleanup()
+            except Exception as exc:
+                logger.warning("Full sync: cleanup before start failed: %s", exc)
+        await automator.initialize(headless=cfg.get("headless", True))
+        automator.email = cfg.get("email", "")
+
         with tempfile.TemporaryDirectory() as temp_dir:
             # If Oura already emailed that the export is ready, download it first.
             config_manager.update_status(
@@ -139,43 +151,56 @@ async def run_full_sync_task(db_session_factory):
                 zip_path = result
                 config_manager.update_status(
                     "Processing",
-                    message=f"Downloaded to {zip_path}. Ingesting...",
+                    message=(
+                        "Downloaded an existing Oura export from your account "
+                        "(not necessarily from a new email). Ingesting…"
+                    ),
                 )
                 logger.info("Full sync: Downloaded existing export to %s", zip_path)
-                db = db_session_factory()
-                try:
-                    parser = OuraParser(db)
-                    parser.parse_zip(zip_path)
-                    now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-                    config_manager.update_status(
-                        "Idle",
-                        message="Sync and ingestion complete!",
-                        last_run=now_str,
-                    )
-                except Exception as e:
-                    logger.error("Full sync: Ingestion partial failure: %s", e)
-                    now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-                    config_manager.update_status(
-                        "Idle",
-                        message=f"Sync complete (partial: {e})",
-                        last_run=now_str,
-                    )
-                finally:
-                    db.close()
-                return
-
-            if isinstance(result, dict) and result.get("status") == "otp_required":
-                waiting_for_otp = True
-                from backend.src.otp_state import mark_otp_requested, otp_prompt_message
-
-                if result.get("code_sent"):
-                    mark_otp_requested()
-                cfg = config_manager.get_config()
-                config_manager.update_status(
-                    "otp_needed",
-                    message=otp_prompt_message(cfg, "Check your email for a verification code."),
+                advanced = await ingest_zip_async(zip_path)
+                if advanced:
+                    return
+                logger.info(
+                    "Full sync: existing export did not add new days; "
+                    "requesting a fresh export from Oura."
                 )
-                logger.warning("Full sync paused: OTP required.")
+                config_manager.update_status(
+                    "Processing",
+                    message=(
+                        "The export on Oura was outdated (no new days). "
+                        "Requesting a fresh export from Oura…"
+                    ),
+                )
+                try:
+                    await automator.cleanup()
+                except Exception as exc:
+                    logger.warning("Full sync: cleanup before fresh export failed: %s", exc)
+                await automator.initialize(headless=cfg.get("headless", True))
+                automator.email = cfg.get("email", "")
+                need_fresh_export = True
+
+            elif isinstance(result, dict):
+                if result.get("status") == "otp_required":
+                    waiting_for_otp = True
+                    from backend.src.otp_state import mark_otp_requested, otp_prompt_message
+
+                    if result.get("code_sent"):
+                        mark_otp_requested()
+                    cfg = config_manager.get_config()
+                    config_manager.update_status(
+                        "otp_needed",
+                        message=otp_prompt_message(cfg, "Check your email for a verification code."),
+                    )
+                    logger.warning("Full sync paused: OTP required.")
+                    return
+                if result.get("status") == "error":
+                    logger.warning("Full sync: no ready export yet: %s", result.get("message"))
+                    need_fresh_export = True
+            else:
+                logger.info("Full sync: no existing export file to download.")
+                need_fresh_export = True
+
+            if not need_fresh_export:
                 return
 
             config_manager.update_status(
@@ -186,9 +211,11 @@ async def run_full_sync_task(db_session_factory):
                 last_export_request_at=datetime.now().strftime("%Y-%m-%d %H:%M:%S")
             )
 
-            # No ready file yet — request generation and wait.
-            result = await automator.request_new_export_and_download(temp_dir)
-            
+            result = await automator.request_new_export_and_download(
+                temp_dir,
+                skip_ready_download=True,
+            )
+
             # Handle OTP requirement — keep session alive so user can submit code
             if isinstance(result, dict) and result.get("status") == "otp_required":
                 waiting_for_otp = True
@@ -209,31 +236,29 @@ async def run_full_sync_task(db_session_factory):
             # Process successfully downloaded file
             if zip_path and isinstance(zip_path, str):
                 config_manager.update_status("Processing", message=f"Downloaded to {zip_path}. Ingesting...")
-                logger.info(f"Full sync: Downloaded to {zip_path}. Ingesting...")
-                
-                # Ingest into Database
-                db = db_session_factory()
-                try:
-                    parser = OuraParser(db)
-                    parser.parse_zip(zip_path)
-                    logger.info("Full sync: Ingestion complete.")
-                    
-                    now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-                    config_manager.update_status("Idle", message="Sync and ingestion complete!", last_run=now_str)
-                except Exception as e:
-                    logger.error(f"Full sync: Ingestion partial failure: {e}")
-                    now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-                    config_manager.update_status("Idle", message=f"Sync complete (partial: {e})", last_run=now_str)
-                finally:
-                    db.close()
+                logger.info("Full sync: Downloaded to %s. Ingesting...", zip_path)
+                config_manager.update_status(
+                    "Processing",
+                    message=(
+                        "Downloaded an existing Oura export from your account "
+                        "(not necessarily from a new email). Ingesting…"
+                    ),
+                )
+                await ingest_zip_async(zip_path)
+                logger.info("Full sync: Ingestion complete.")
             elif isinstance(result, dict) and result.get("status") == "error":
                 logger.error("Full sync failed: %s", result.get("message"))
                 config_manager.update_status("Error", message=result.get("message", "Sync failed"))
             else:
-                logger.error("Full sync failed: No file downloaded.")
+                detail = repr(result) if result is not None else "no response from Oura automation"
+                logger.error("Full sync failed: No file downloaded (%s).", detail)
                 config_manager.update_status(
                     "Error",
-                    message="No file downloaded. If Oura emailed you, try Sync now again in a minute.",
+                    message=(
+                        "No file downloaded from Oura. If you received an export email, "
+                        "wait a minute and try Sync now again. Otherwise check that you are "
+                        "still logged in under Settings → Connection."
+                    ),
                 )
                 
     except Exception as e:
@@ -515,8 +540,9 @@ async def request_export(background_tasks: BackgroundTasks):
     """
     Starts the full export -> wait -> download -> ingest process in the background.
     """
+    recover_stuck_sync_if_needed()
     cfg = config_manager.get_config()
-    if cfg.get("status") == "Processing":
+    if cfg.get("status") in PROCESSING_STATUSES:
         raise HTTPException(status_code=409, detail="Sync already in progress")
         
     background_tasks.add_task(run_full_sync_task, SessionLocal)
@@ -557,10 +583,9 @@ async def download_export(db: Session = Depends(get_db)):
             
             zip_path = _coerce_downloaded_zip_path(result)
 
-            # Ingest
-            parser = OuraParser(db)
-            parser.parse_zip(zip_path)
-            
+            config_manager.update_status("Processing", message="Ingesting downloaded export…")
+            await ingest_zip_async(zip_path)
+
             return {"message": "Download and ingestion successful!"}
     except HTTPException as he:
         raise he
@@ -886,10 +911,10 @@ async def ingest_zip(file: UploadFile = File(...), db: Session = Depends(get_db)
             tmp_path = tmp_file.name
             
         logger.info(f"Received ZIP file, saved to {tmp_path}")
-        
-        parser.parse_zip(tmp_path)
+
+        await ingest_zip_async(tmp_path)
         os.remove(tmp_path)
-        
+
         return {"message": "Ingestion successful"}
     except Exception as e:
         logger.error(f"Ingestion error: {e}")

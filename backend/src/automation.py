@@ -556,6 +556,24 @@ class OuraAutomator:
 
     # --- Data Export Logic ---
 
+    async def _is_export_processing(self) -> bool:
+        """True when Oura shows an export is being generated (not ready to download yet)."""
+        if not self.page:
+            return False
+        for snippet in (
+            "Processing",
+            "Preparing",
+            "being prepared",
+            "export is on its way",
+            "requested your data",
+        ):
+            try:
+                if await self.page.get_by_text(snippet, exact=False).first.is_visible(timeout=800):
+                    return True
+            except Exception:
+                continue
+        return False
+
     async def _is_export_download_ready(self) -> bool:
         """True when Oura's export page shows a download control."""
         if not self.page:
@@ -577,13 +595,22 @@ class OuraAutomator:
                 continue
         return False
 
-    async def request_new_export_and_download(self, save_dir: str) -> Optional[str]:
+    async def request_new_export_and_download(
+        self,
+        save_dir: str,
+        *,
+        skip_ready_download: bool = False,
+    ) -> Union[str, Dict[str, Any], None]:
         """
         Orchestrates the entire data export flow:
         1. Navigate to export page.
         2. Request a new export (if not already processing).
         3. Wait for Oura to generate the export (polling).
         4. Download the file.
+
+        When ``skip_ready_download`` is True, do not download an export that is
+        already on the page — used after a stale ingest so we wait for a newly
+        generated file instead of re-downloading the same ZIP.
         """
         logger.info("Starting Data Request Flow...")
         if not self._is_initialized:
@@ -602,36 +629,68 @@ class OuraAutomator:
                         return {"status": "otp_required"}
                     # Login succeeded, retry navigation
                     if not await self._navigate_to_export_page():
-                        return None
+                        return {
+                            "status": "error",
+                            "message": (
+                                "Could not open Oura data export after sign-in. "
+                                "Try logging out in Settings and signing in again."
+                            ),
+                        }
                 else:
                     return {"status": "error", "message": "Could not open Oura data export page."}
 
-            # 2. If Oura already has a file ready (email sent), download immediately.
-            if await self._is_export_download_ready():
+            # 2. Fast path: download when a ready file exists and we are not forcing a new export.
+            if not skip_ready_download and await self._is_export_download_ready():
                 logger.info("Export already ready on Oura — downloading without a new request.")
                 return await self._download_file(save_dir)
 
-            # 3. Click Request Button (if available)
-            if await self._click_request_export_button():
-                logger.info("Export requested. Waiting for processing...")
+            if skip_ready_download:
+                # Do not treat an old on-page download as a new export.
+                if await self._is_export_download_ready() and not await self._is_export_processing():
+                    if await self._click_request_export_button():
+                        logger.info("Requested a new export (replacing stale ready file).")
+                    else:
+                        return {
+                            "status": "error",
+                            "message": (
+                                "Oura still shows an old export ready to download and will not "
+                                "start a new one. Open membership.ouraring.com/data-export, "
+                                "request a new export, wait for the email, then try Sync now again."
+                            ),
+                        }
+                elif await self._is_export_processing():
+                    logger.info("Oura is already generating an export — waiting for it to finish.")
+                elif await self._click_request_export_button():
+                    logger.info("Export requested. Waiting for processing...")
+                else:
+                    logger.info("Could not click request; polling in case export is already running.")
             else:
-                logger.info("Export might already be requested or button not found.")
+                if await self._click_request_export_button():
+                    logger.info("Export requested. Waiting for processing...")
+                else:
+                    logger.info("Export might already be requested or button not found.")
 
-            # 4. Wait for Processing
-            is_ready = await self._wait_for_processing()
+            is_ready = await self._wait_for_processing(
+                require_processing_first=skip_ready_download,
+            )
             if not is_ready:
                 logger.warning("Timed out waiting for export processing.")
                 return {
                     "status": "error",
-                    "message": "Export is not ready on Oura yet. If you received the email, try again in a minute.",
+                    "message": (
+                        "Oura has not finished generating a new export yet. "
+                        "If you received the ready email, try Sync now again in a minute."
+                    ),
                 }
 
-            # 5. Download
             return await self._download_file(save_dir)
 
         except Exception as e:
-            logger.error(f"Request automation failed: {e}")
-            return None
+            logger.error(f"Request automation failed: {e}", exc_info=True)
+            return {
+                "status": "error",
+                "message": f"Oura export automation failed: {e}",
+            }
 
     async def download_existing_export(self, save_dir: str) -> Optional[str]:
         """
@@ -757,11 +816,15 @@ class OuraAutomator:
             logger.error(f"Click failed: {e}")
             return False
 
-    async def _wait_for_processing(self) -> bool:
+    async def _wait_for_processing(self, *, require_processing_first: bool = False) -> bool:
         """Polls until the export is ready (download button appears)."""
+
+        saw_processing = not require_processing_first
         # Fast polls first — email often arrives within a few minutes.
         for i in range(24):  # ~12 minutes at 30s
-            if await self._is_export_download_ready():
+            if await self._is_export_processing():
+                saw_processing = True
+            if await self._is_export_download_ready() and saw_processing:
                 logger.info("Export ready during fast polling.")
                 return True
             logger.info(f"Processing... fast check {i + 1}/24")
@@ -776,7 +839,9 @@ class OuraAutomator:
         max_retries = 24  # ~2 hours at 5 minutes
         poll_interval = 300
         for i in range(max_retries):
-            if await self._is_export_download_ready():
+            if await self._is_export_processing():
+                saw_processing = True
+            if await self._is_export_download_ready() and saw_processing:
                 logger.info("Export ready during slow polling.")
                 return True
             logger.info(f"Processing... slow check {i + 1}/{max_retries}")

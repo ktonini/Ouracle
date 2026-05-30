@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
-import { api } from '@/lib/api';
+import { api, type SyncFreshness } from '@/lib/api';
 
 type ConnectionStatus = 'connected' | 'disconnected' | 'checking';
 
@@ -7,11 +7,17 @@ interface SyncInfo {
     status: string;
     lastRun: string | null;
     nextRun: string | null;
+    freshness: SyncFreshness | null;
 }
 
 export function useConnectionHealth() {
     const [connectionStatus, setConnectionStatus] = useState<ConnectionStatus>('checking');
-    const [syncInfo, setSyncInfo] = useState<SyncInfo>({ status: 'Unknown', lastRun: null, nextRun: null });
+    const [syncInfo, setSyncInfo] = useState<SyncInfo>({
+        status: 'Unknown',
+        lastRun: null,
+        nextRun: null,
+        freshness: null,
+    });
     const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
     const checkConnection = useCallback(async () => {
@@ -21,11 +27,15 @@ export function useConnectionHealth() {
 
             if (healthy) {
                 try {
-                    const status = await api.getSyncStatus();
+                    const [status, freshness] = await Promise.all([
+                        api.getSyncStatus(),
+                        api.getSyncFreshness(),
+                    ]);
                     setSyncInfo({
                         status: status.status || 'Unknown',
                         lastRun: status.last_run || null,
                         nextRun: status.next_run || null,
+                        freshness,
                     });
                 } catch {
                     // Don't flip connection status for sync status failure

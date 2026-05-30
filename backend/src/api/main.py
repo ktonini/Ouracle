@@ -473,26 +473,18 @@ async def run_ingestion_task(force=False):
                 pass
 
 async def process_ingestion(zip_path):
+    from backend.src.ingestion.runner import ingest_zip_async
+
     logger.info(f"Background worker: Downloaded to {zip_path}")
-    
-    # Ingest
-    config_manager.update_status("Ingesting...")
-    db = SessionLocal()
+    config_manager.update_status("Ingesting...", message="Ingesting downloaded export…")
     try:
-        parser = OuraParser(db)
-        parser.parse_zip(zip_path)
+        await ingest_zip_async(
+            zip_path,
+            success_message="Sync completed successfully.",
+        )
         logger.info("Background worker: Ingestion successful.")
-        
-        # Success!
-        now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        config_manager.update_status("Idle", message="Sync completed successfully.", last_run=now_str)
-        
     except Exception as e:
         logger.error(f"Background worker: Ingestion failed: {e}")
-        # Don't crash the whole process; mark as partial success if data was ingested
-        config_manager.update_status("Idle", message=f"Sync complete (partial: {e})")
-    finally:
-        db.close()
 
 
 async def background_worker():

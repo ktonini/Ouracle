@@ -13,6 +13,7 @@ import {
 } from '@/lib/automation-status';
 import { otpExpiryHint } from '@/lib/otp-timing';
 import { formatDistanceToNow } from 'date-fns';
+import { isAutomationBusy, syncStatusHeadline, syncStatusSubline } from '@/lib/sync-display';
 import { useSyncFreshness } from '@/hooks/useInsights';
 import { SyncFreshnessChip } from '@/components/health/InsightsPanels';
 
@@ -36,8 +37,9 @@ interface AutomationState {
 
 export function SettingsPanel({ onClose }: SettingsPanelProps) {
     const [automation, setAutomation] = useState<AutomationState | null>(null);
-    const { freshness } = useSyncFreshness();
     const [loading, setLoading] = useState(false);
+    const syncBusy = loading || isAutomationBusy(automation?.status);
+    const { freshness, refresh: refreshFreshness } = useSyncFreshness(syncBusy ? 5_000 : 60_000);
     const [error, setError] = useState<string | null>(null);
     const [email, setEmail] = useState('');
     const [otp, setOtp] = useState('');
@@ -125,13 +127,12 @@ export function SettingsPanel({ onClose }: SettingsPanelProps) {
                     // Auto-download when ready
                     handleAutoDownload();
                 } else if (data.status === 'Idle') {
-                    // Refresh mobile sync settings to get updated latest_day
+                    refreshFreshness();
                     api.getMobileSyncSettings()
                         .then(ms => setMobileSync(ms))
                         .catch(() => {});
                     if (pollRef.current) clearInterval(pollRef.current);
                     setLoading(false);
-                    // Full refresh of all status data including mobile sync
                     fetchStatus();
                     api.getMobileSyncSettings().then(setMobileSync).catch(err => console.error("Failed to refresh mobile sync", err));
                 } else if (data.status === 'Error') {
@@ -146,14 +147,13 @@ export function SettingsPanel({ onClose }: SettingsPanelProps) {
                 console.error("Polling error", err);
             }
         }, 5000);
-    }, [mapAutomationStatus]);
+    }, [mapAutomationStatus, refreshFreshness]);
 
     const handleAutoDownload = async () => {
         setLoading(true);
         setError(null);
         try {
-            const data = await api.downloadExport();
-            setAutomation(prev => prev ? { ...prev, status: 'Idle', message: data?.message || 'Sync complete', lastRun: new Date().toISOString() } : null);
+            await api.downloadExport();
             await fetchStatus();
         } catch (err: any) {
             setError(err?.message || 'Download failed');
@@ -303,8 +303,7 @@ export function SettingsPanel({ onClose }: SettingsPanelProps) {
         setLoading(true);
         setError(null);
         try {
-            const data = await api.uploadZip(file);
-            setAutomation(prev => prev ? { ...prev, status: 'Idle', message: data?.message || 'Upload complete', lastRun: new Date().toISOString() } : null);
+            await api.uploadZip(file);
             await fetchStatus();
         } catch (err: any) {
             setError(err?.message || 'Upload failed');
@@ -315,7 +314,7 @@ export function SettingsPanel({ onClose }: SettingsPanelProps) {
     };
 
     const isWaitingForOtp = needsOuraReauth(automation?.status, automation?.message);
-    const isExporting = automation?.status === 'Processing' || automation?.status === 'Ingesting';
+    const isExporting = isAutomationBusy(automation?.status);
     const isError = automation?.status === 'Error';
     const isLoggedIn = automation?.loggedIn === true && !isWaitingForOtp && !isError;
     const otpHint = automation
@@ -375,22 +374,41 @@ export function SettingsPanel({ onClose }: SettingsPanelProps) {
                             </p>
                         )}
 
-                        {/* Last sync info */}
-                        {isLoggedIn && automation?.lastRun && (
-                            <div className="flex items-center justify-between text-xs text-muted-foreground">
-                                <span>
-                                    Last sync {formatDistanceToNow(parseLocalDate(automation.lastRun), { addSuffix: true })}
-                                </span>
-                                {mobileSync?.latest_day && (
-                                    <span className="font-medium text-foreground">
-                                        Data up to {mobileSync.latest_day}
-                                    </span>
+                        {/* Data freshness (distinct from last ingest attempt) */}
+                        {isLoggedIn && (freshness?.latest_day || automation?.lastRun || isExporting) && (
+                            <div className="space-y-1 text-xs text-muted-foreground">
+                                <p className={cn(
+                                    "font-medium",
+                                    freshness?.status === 'fresh' ? "text-foreground" : "text-amber-200/90",
+                                )}>
+                                    {syncStatusHeadline(
+                                        {
+                                            status: automation?.status ?? 'Idle',
+                                            message: automation?.message ?? undefined,
+                                            last_run: automation?.lastRun,
+                                        },
+                                        freshness,
+                                    )}
+                                </p>
+                                {syncStatusSubline(
+                                    { status: automation?.status ?? 'Idle', last_run: automation?.lastRun },
+                                    freshness,
+                                ) && (
+                                    <p>{syncStatusSubline(
+                                        { status: automation?.status ?? 'Idle', last_run: automation?.lastRun },
+                                        freshness,
+                                    )}</p>
+                                )}
+                                {freshness?.expected_latest_day && freshness.status !== 'fresh' && (
+                                    <p className="text-[10px] text-white/40">
+                                        Expecting data through {freshness.expected_latest_day} (tonight&apos;s sleep not included).
+                                    </p>
                                 )}
                             </div>
                         )}
 
                         {/* Reassurance message when logged in */}
-                        {isLoggedIn && !isExporting && !isWaitingForOtp && (
+                        {isLoggedIn && !isExporting && !isWaitingForOtp && freshness?.status === 'fresh' && (
                             <p className="text-xs text-score-green bg-score-green/10 rounded-md px-3 py-2">
                                 You're all set! Data syncs automatically every day{automation?.nextRun ? ` at ${parseLocalDate(automation.nextRun).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}` : ''}. Click "Sync now" if you want fresh data immediately.
                             </p>
@@ -505,8 +523,12 @@ export function SettingsPanel({ onClose }: SettingsPanelProps) {
                                     <p className="text-white/80 tabular-nums">{freshness.latest_day ?? '—'}</p>
                                 </div>
                                 <div className="space-y-0.5">
-                                    <p className="text-white/40 uppercase tracking-wider text-[9px]">Days behind</p>
+                                    <p className="text-white/40 uppercase tracking-wider text-[9px]">Days behind expected</p>
                                     <p className="text-white/80 tabular-nums">{freshness.days_behind ?? '—'}</p>
+                                </div>
+                                <div className="space-y-0.5">
+                                    <p className="text-white/40 uppercase tracking-wider text-[9px]">Expected through</p>
+                                    <p className="text-white/80 tabular-nums">{freshness.expected_latest_day ?? '—'}</p>
                                 </div>
                                 <div className="space-y-0.5">
                                     <p className="text-white/40 uppercase tracking-wider text-[9px]">Last ingest</p>

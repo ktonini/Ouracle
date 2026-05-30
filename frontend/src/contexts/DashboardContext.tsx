@@ -2,6 +2,7 @@ import { createContext, useContext, useState, useEffect, type ReactNode } from '
 import type { WidgetInstance, Dashboard } from '@/types';
 import { useOuraData } from '@/hooks/useOuraData';
 import { useConnectionHealth } from '@/hooks/useConnectionHealth';
+import type { SyncFreshness } from '@/lib/api';
 import { useDashboardPersistence } from '@/hooks/useDashboardPersistence';
 import { format } from 'date-fns';
 
@@ -56,7 +57,12 @@ interface DashboardContextType {
 
     // Connection & Sync State
     connectionStatus: 'connected' | 'disconnected' | 'checking';
-    syncInfo: { status: string; lastRun: string | null; nextRun: string | null };
+    syncInfo: {
+        status: string;
+        lastRun: string | null;
+        nextRun: string | null;
+        freshness: SyncFreshness | null;
+    };
     retryConnection: () => void;
 }
 

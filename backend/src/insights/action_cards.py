@@ -15,6 +15,7 @@ from sqlalchemy.orm import Session
 
 from ..models import Activity, Readiness, RingBattery, Sleep, SleepSession
 from .baselines import build_baseline_bundle
+from .sync_freshness import _latest_day, data_lag_days, expected_latest_day
 
 # Severity ranking used for ordering. Higher numbers render first.
 _SEVERITY_RANK = {"critical": 3, "warning": 2, "info": 1}
@@ -57,17 +58,6 @@ class ActionCard:
         }
 
 
-def _latest_ingest_day(db: Session) -> Optional[date]:
-    candidates = [
-        db.query(Sleep.day).order_by(Sleep.day.desc()).limit(1).scalar(),
-        db.query(Activity.day).order_by(Activity.day.desc()).limit(1).scalar(),
-        db.query(Readiness.day).order_by(Readiness.day.desc()).limit(1).scalar(),
-        db.query(SleepSession.day).order_by(SleepSession.day.desc()).limit(1).scalar(),
-    ]
-    valid = [d for d in candidates if d is not None]
-    return max(valid) if valid else None
-
-
 def _latest_battery(db: Session) -> Optional[RingBattery]:
     return (
         db.query(RingBattery)
@@ -100,8 +90,9 @@ def build_action_cards(db: Session, day: date) -> List[ActionCard]:
     readiness = db.query(Readiness).filter(Readiness.day == day).one_or_none()
     session = _primary_session(db, day)
 
-    # --- Sync freshness -----------------------------------------------------
-    latest = _latest_ingest_day(db)
+    # --- Sync freshness (same expected-day model as sync_freshness.py) ------
+    latest = _latest_day(db)
+    expected = expected_latest_day()
     if latest is None:
         cards.append(ActionCard(
             id=f"sync-empty-{day_str}", day=day_str, severity="warning",
@@ -110,16 +101,32 @@ def build_action_cards(db: Session, day: date) -> List[ActionCard]:
             recommendation="Run a sync or upload an Oura export ZIP from Settings.",
         ))
     else:
-        lag_days = (day - latest).days
-        if lag_days >= 2:
+        lag_days = data_lag_days(latest)
+        if lag_days is not None and lag_days >= 1:
+            day_word = "day" if lag_days == 1 else "days"
             cards.append(ActionCard(
                 id=f"sync-stale-{day_str}", day=day_str, severity="warning",
                 category="sync",
-                title=f"Local data is {lag_days} days behind",
-                reason=f"Latest ingested day is {latest.isoformat()}.",
+                title=f"Local data is {lag_days} {day_word} behind",
+                reason=(
+                    f"Latest ingested day is {latest.isoformat()}; "
+                    f"expecting through {expected.isoformat()}."
+                ),
                 recommendation="Trigger a fresh export request from Settings.",
-                evidence=[ActionEvidence(metric="latest_day", value=latest.isoformat(),
-                                          day=latest.isoformat(), source_path="sync.latest_day")],
+                evidence=[
+                    ActionEvidence(
+                        metric="latest_day",
+                        value=latest.isoformat(),
+                        day=latest.isoformat(),
+                        source_path="sync.latest_day",
+                    ),
+                    ActionEvidence(
+                        metric="expected_latest_day",
+                        value=expected.isoformat(),
+                        day=expected.isoformat(),
+                        source_path="sync.expected_latest_day",
+                    ),
+                ],
             ))
 
     # --- Ring battery -------------------------------------------------------

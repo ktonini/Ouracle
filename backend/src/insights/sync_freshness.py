@@ -20,6 +20,7 @@ from ..models import Activity, Readiness, Sleep, SleepSession
 @dataclass
 class SyncFreshness:
     latest_day: Optional[str]
+    expected_latest_day: Optional[str]
     last_ingest_at: Optional[str]
     last_export_request_at: Optional[str]
     status: str
@@ -34,6 +35,19 @@ class SyncFreshness:
         return asdict(self)
 
 
+def expected_latest_day(today: Optional[date] = None) -> date:
+    """Latest Oura day we reasonably expect before tonight's sleep completes."""
+
+    today = today or date.today()
+    return today - timedelta(days=1)
+
+
+def data_lag_days(latest: Optional[date], today: Optional[date] = None) -> Optional[int]:
+    if latest is None:
+        return None
+    return max(0, (expected_latest_day(today) - latest).days)
+
+
 def _latest_day(db: Session) -> Optional[date]:
     candidates = [
         db.query(Sleep.day).order_by(Sleep.day.desc()).limit(1).scalar(),
@@ -45,6 +59,59 @@ def _latest_day(db: Session) -> Optional[date]:
     return max(valid) if valid else None
 
 
+def ingest_advanced_data(before: Optional[date], after: Optional[date]) -> bool:
+    return after is not None and (before is None or after > before)
+
+
+def apply_post_ingest_result(
+    before_latest: Optional[date],
+    after_latest: Optional[date],
+    *,
+    success_message: str = "Sync and ingestion complete!",
+    partial_error: Optional[Exception] = None,
+) -> None:
+    """Update automation status after a ZIP ingest.
+
+    ``last_run`` is only bumped when the newest local Oura day moved forward so
+    "last ingest" does not imply fresh data when the export was stale.
+    """
+
+    advanced = ingest_advanced_data(before_latest, after_latest)
+    now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+    if partial_error is not None:
+        message = f"Sync complete (partial: {partial_error})"
+    elif advanced:
+        message = success_message
+    else:
+        message = (
+            "Ingest finished but no new days were added. "
+            "Request a fresh Oura export and sync again."
+        )
+
+    kwargs: Dict[str, Any] = {"message": message}
+    if advanced:
+        kwargs["last_run"] = now_str
+    config_manager.update_status("Idle", **kwargs)
+
+
+def apply_post_ingest_status(
+    db: Session,
+    before_latest: Optional[date],
+    *,
+    success_message: str = "Sync and ingestion complete!",
+    partial_error: Optional[Exception] = None,
+) -> None:
+    """Update status using the DB session to read the latest day after ingest."""
+
+    apply_post_ingest_result(
+        before_latest,
+        _latest_day(db),
+        success_message=success_message,
+        partial_error=partial_error,
+    )
+
+
 def _classify(latest: Optional[date], automation_status: Optional[str]) -> str:
     """Map raw state into a short status keyword for UI badges."""
 
@@ -54,10 +121,10 @@ def _classify(latest: Optional[date], automation_status: Optional[str]) -> str:
         return "syncing"
     if latest is None:
         return "empty"
-    lag = (date.today() - latest).days
-    if lag <= 1:
+    lag = data_lag_days(latest)
+    if lag is None or lag <= 0:
         return "fresh"
-    if lag <= 3:
+    if lag <= 2:
         return "stale"
     return "very_stale"
 
@@ -74,6 +141,7 @@ def build_sync_freshness(
 
     cfg = config_manager.get_config()
     latest = _latest_day(db)
+    expected = expected_latest_day()
     automation_status = cfg.get("status")
     last_run = cfg.get("last_run")
     next_run = cfg.get("next_run")
@@ -82,8 +150,8 @@ def build_sync_freshness(
     last_export_request = cfg.get("last_export_request_at") or None
 
     status_keyword = _classify(latest, automation_status)
-    if message is None:
-        message = _default_message(status_keyword, latest, automation_status)
+    if message is None or status_keyword in ("stale", "very_stale"):
+        message = _default_message(status_keyword, latest, automation_status, expected)
 
     mobile_enabled = bool(cfg.get("mobile_sync_enabled", False))
     mobile_status = None
@@ -92,12 +160,11 @@ def build_sync_freshness(
         if getattr(mobile_server_state, "running", False) and not mobile_status:
             mobile_status = "Running"
 
-    days_behind = None
-    if latest is not None:
-        days_behind = max(0, (date.today() - latest).days)
+    days_behind = data_lag_days(latest)
 
     return SyncFreshness(
         latest_day=latest.isoformat() if latest else None,
+        expected_latest_day=expected.isoformat(),
         last_ingest_at=last_run,
         last_export_request_at=last_export_request,
         status=status_keyword,
@@ -114,6 +181,7 @@ def _default_message(
     status_keyword: str,
     latest: Optional[date],
     automation_status: Optional[str],
+    expected: date,
 ) -> str:
     if status_keyword == "blocked":
         if automation_status == "otp_needed":
@@ -125,7 +193,11 @@ def _default_message(
         return "No Oura data has been ingested yet."
     if latest is None:
         return "Status unknown."
-    lag = (date.today() - latest).days
+    lag = data_lag_days(latest)
     if status_keyword == "fresh":
-        return f"Up to date through {latest.isoformat()}."
-    return f"Latest local day is {latest.isoformat()} ({lag} days behind)."
+        return f"Up to date through {latest.isoformat()} (expecting through {expected.isoformat()})."
+    assert lag is not None and lag > 0
+    return (
+        f"Latest local day is {latest.isoformat()}; "
+        f"missing {lag} day(s) before expected {expected.isoformat()}."
+    )

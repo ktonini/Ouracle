@@ -99,6 +99,7 @@ data class TodayInsightsDto(
 @Serializable
 data class SyncFreshnessDto(
     @SerialName("latest_day") val latestDay: String? = null,
+    @SerialName("expected_latest_day") val expectedLatestDay: String? = null,
     @SerialName("last_ingest_at") val lastIngestAt: String? = null,
     @SerialName("last_export_request_at") val lastExportRequestAt: String? = null,
     val status: String,

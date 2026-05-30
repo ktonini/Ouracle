@@ -203,6 +203,7 @@ class MobileDailyGuidance(BaseModel):
 
 class MobileSyncFreshness(BaseModel):
     latest_day: Optional[str] = None
+    expected_latest_day: Optional[str] = None
     last_ingest_at: Optional[str] = None
     last_export_request_at: Optional[str] = None
     status: str

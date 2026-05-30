@@ -14,8 +14,10 @@ import {
 } from "lucide-react";
 import { Calendar } from "@/components/ui/calendar";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
-import { format, isToday, formatDistanceToNow } from "date-fns";
-import { cn, parseLocalDate } from "@/lib/utils";
+import { format, isToday } from "date-fns";
+import { cn } from "@/lib/utils";
+import type { SyncFreshness } from "@/lib/api";
+import { syncIndicatorTone, syncStatusHeadline } from "@/lib/sync-display";
 import type { Dashboard } from "@/types";
 import { ModeToggle } from "@/components/mode-toggle";
 
@@ -33,7 +35,12 @@ interface MainLayoutProps {
 
     // Connection Health
     connectionStatus?: 'connected' | 'disconnected' | 'checking';
-    syncInfo?: { status: string; lastRun: string | null; nextRun: string | null };
+    syncInfo?: {
+        status: string;
+        lastRun: string | null;
+        nextRun: string | null;
+        freshness: SyncFreshness | null;
+    };
     onRetryConnection?: () => void;
 
     // Dashboard Props
@@ -141,19 +148,27 @@ export function MainLayout({
                                         {syncInfo && (
                                             <span
                                                 className="inline-flex items-center gap-1.5 px-2 py-0.5 text-[11px] text-white/40"
-                                                title={syncInfo.lastRun
-                                                    ? `Last synced: ${formatDistanceToNow(parseLocalDate(syncInfo.lastRun))} ago`
-                                                    : "Never synced"}
+                                                title={syncStatusHeadline(
+                                                    { status: syncInfo.status, message: undefined, last_run: syncInfo.lastRun },
+                                                    syncInfo.freshness,
+                                                )}
                                             >
                                                 <span className={cn(
                                                     "h-1.5 w-1.5 rounded-full",
-                                                    syncInfo.status === 'Processing' ? "bg-amber-400/80 animate-pulse" :
-                                                    syncInfo.status === 'Error' ? "bg-rose-500/80" :
-                                                    syncInfo.lastRun ? "bg-emerald-400/80 shadow-[0_0_8px_rgba(52,211,153,0.4)]" : "bg-white/20"
+                                                    syncIndicatorTone(syncInfo.status, syncInfo.freshness) === 'busy'
+                                                        ? "bg-amber-400/80 animate-pulse"
+                                                        : syncIndicatorTone(syncInfo.status, syncInfo.freshness) === 'error'
+                                                            ? "bg-rose-500/80"
+                                                            : syncIndicatorTone(syncInfo.status, syncInfo.freshness) === 'fresh'
+                                                                ? "bg-emerald-400/80 shadow-[0_0_8px_rgba(52,211,153,0.4)]"
+                                                                : syncIndicatorTone(syncInfo.status, syncInfo.freshness) === 'stale'
+                                                                    ? "bg-amber-400/80"
+                                                                    : "bg-white/20",
                                                 )} />
-                                                {syncInfo.lastRun
-                                                    ? `Synced ${formatDistanceToNow(parseLocalDate(syncInfo.lastRun))} ago`
-                                                    : "Not synced"}
+                                                {syncStatusHeadline(
+                                                    { status: syncInfo.status, message: undefined, last_run: syncInfo.lastRun },
+                                                    syncInfo.freshness,
+                                                )}
                                             </span>
                                         )}
                                     </div>

@@ -30,7 +30,7 @@ interface AppShellProps {
   selectedDate: Date;
   onDateChange: (date: Date) => void;
   connectionStatus: 'connected' | 'disconnected' | 'checking';
-  syncStatus: { status: string; lastRun: string | null } | null;
+  syncStatus: { status: string; lastRun: string | null; freshness?: import('@/lib/api').SyncFreshness | null } | null;
   onRetryConnection: () => void;
   data: any;
 
@@ -269,7 +269,7 @@ export function AppShell({
         <TopDateBar
           selectedDate={selectedDate}
           onDateChange={onDateChange}
-          syncStatus={syncStatus ? { status: syncStatus.status, lastRun: syncStatus.lastRun } : undefined}
+          syncStatus={syncStatus ?? undefined}
           connectionStatus={connectionStatus}
           rightActions={
             <>

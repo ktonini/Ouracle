@@ -5,11 +5,13 @@ import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover
 import { format } from 'date-fns';
 import { cn } from '@/lib/utils';
 import { ModeToggle } from '@/components/mode-toggle';
+import type { SyncFreshness } from '@/lib/api';
+import { syncIndicatorTone, syncStatusHeadline } from '@/lib/sync-display';
 
 interface TopDateBarProps {
   selectedDate: Date;
   onDateChange: (date: Date) => void;
-  syncStatus?: { status: string; lastRun: string | null };
+  syncStatus?: { status: string; lastRun: string | null; freshness?: SyncFreshness | null };
   connectionStatus?: 'connected' | 'disconnected' | 'checking';
   rightActions?: React.ReactNode;
   className?: string;
@@ -97,13 +99,20 @@ export function TopDateBar({ selectedDate, onDateChange, syncStatus, connectionS
           <div className="flex items-center gap-2 text-[11px] text-white/35">
             <span className={cn(
               'w-1.5 h-1.5 rounded-full',
-              syncStatus.status === 'Processing' ? 'bg-score-yellow pulse-dot' :
-              syncStatus.status === 'Error' ? 'bg-living-coral' :
-              syncStatus.lastRun ? 'bg-score-green pulse-dot' : 'bg-white/20'
+              syncIndicatorTone(syncStatus.status, syncStatus.freshness ?? null) === 'busy'
+                ? 'bg-score-yellow pulse-dot'
+                : syncIndicatorTone(syncStatus.status, syncStatus.freshness ?? null) === 'error'
+                  ? 'bg-living-coral'
+                  : syncIndicatorTone(syncStatus.status, syncStatus.freshness ?? null) === 'fresh'
+                    ? 'bg-score-green pulse-dot'
+                    : syncIndicatorTone(syncStatus.status, syncStatus.freshness ?? null) === 'stale'
+                      ? 'bg-score-yellow'
+                      : 'bg-white/20',
             )} />
-            {syncStatus.lastRun
-              ? `Synced ${format(new Date(syncStatus.lastRun.replace(' ', 'T')), 'HH:mm')}`
-              : 'No sync'}
+            {syncStatusHeadline(
+              { status: syncStatus.status, last_run: syncStatus.lastRun },
+              syncStatus.freshness ?? null,
+            )}
           </div>
         )}
         {rightActions}

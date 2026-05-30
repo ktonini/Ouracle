@@ -101,6 +101,7 @@ export interface DailyGuidance {
 
 export interface SyncFreshness {
     latest_day: string | null;
+    expected_latest_day: string | null;
     last_ingest_at: string | null;
     last_export_request_at: string | null;
     status: 'fresh' | 'stale' | 'very_stale' | 'empty' | 'syncing' | 'blocked';

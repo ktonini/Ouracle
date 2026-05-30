@@ -47,7 +47,9 @@ function DashboardApp() {
     clearActiveThread,
   } = useChat();
 
-  const syncStatus = syncInfo ? { status: syncInfo.status, lastRun: syncInfo.lastRun } : null;
+  const syncStatus = syncInfo
+    ? { status: syncInfo.status, lastRun: syncInfo.lastRun, freshness: syncInfo.freshness }
+    : null;
 
   return (
     <AppShell

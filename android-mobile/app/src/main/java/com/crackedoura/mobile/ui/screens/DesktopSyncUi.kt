@@ -58,9 +58,13 @@ fun SyncFreshnessCard(
             SyncFreshnessPill(freshness)
             freshness.daysBehind?.let { behind ->
                 if (behind > 0) {
-                    StatusPill(label = "$behind d behind", tone = Color(0xFFFFB347))
+                    StatusPill(label = "$behind d behind expected", tone = Color(0xFFFFB347))
                 }
             }
+        }
+
+        freshness.expectedLatestDay?.let {
+            DetailMetricRow("Expected through", it)
         }
 
         freshness.message?.takeIf { it.isNotBlank() }?.let { msg ->

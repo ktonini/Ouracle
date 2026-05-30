@@ -72,6 +72,9 @@ def otp_prompt_message(cfg: dict[str, Any], fallback: str | None = None) -> str:
 
 def enrich_automation_status(cfg: dict[str, Any]) -> dict[str, Any]:
     """Merge config with OTP timing fields and an updated prompt when waiting."""
+    from .sync_recovery import enrich_with_sync_recovery
+
+    cfg = enrich_with_sync_recovery(cfg)
     out = dict(cfg)
     out.update(otp_status_fields(cfg))
     if cfg.get("status") in ("otp_needed", "Waiting"):

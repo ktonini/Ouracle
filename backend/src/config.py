@@ -2,6 +2,7 @@ import json
 import os
 import threading
 import logging
+from datetime import datetime
 from typing import Dict, Any
 
 from .paths import get_user_data_dir
@@ -31,7 +32,22 @@ DEFAULT_CONFIG = {
     "mobile_sync_port": 8037,
     "last_export_request_at": None,
     "otp_requested_at": None,
+    "status_started_at": None,
 }
+
+_PROCESSING_STATUSES = frozenset({
+    "Processing",
+    "Starting...",
+    "Initializing...",
+    "Running Automation...",
+    "Running Automation",
+    "Downloading...",
+    "Ingesting...",
+    "Ingesting",
+    "Submitting OTP...",
+    "Starting manual run...",
+    "Installing dependency (Chromium)...",
+})
 
 DEFAULT_DASHBOARD = {"dashboard": {"dashboards": [], "activeDashboardId": None}}
 
@@ -69,7 +85,7 @@ class ConfigManager:
         try:
             if not os.path.exists(path):
                 return {}
-            with open(path, 'r', encoding='utf-8') as f:
+            with open(path, 'r', encoding='utf-8-sig') as f:
                 content = f.read().strip()
                 if not content:
                     return {}
@@ -137,6 +153,13 @@ class ConfigManager:
         """
         if status in ("otp_needed", "Waiting"):
             kwargs.setdefault("logged_in", False)
+        if status in _PROCESSING_STATUSES:
+            kwargs.setdefault(
+                "status_started_at",
+                datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            )
+        elif status == "Idle":
+            kwargs.setdefault("status_started_at", None)
         self.update_config(status=status, **kwargs)
 
 config_manager = ConfigManager()
