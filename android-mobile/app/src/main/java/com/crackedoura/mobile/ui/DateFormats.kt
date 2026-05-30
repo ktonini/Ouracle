@@ -10,7 +10,7 @@ import java.util.Locale
 import kotlin.math.absoluteValue
 import kotlin.math.roundToInt
 
-private val prettyDateFormatter = DateTimeFormatter.ofPattern("EEE, MMM d")
+private val prettyDateFormatter = DateTimeFormatter.ofPattern("EEE, MMM d, yyyy")
 private val compactDateFormatter = DateTimeFormatter.ofPattern("MMM d")
 private val monthDateFormatter = DateTimeFormatter.ofPattern("MMM d", Locale.US)
 private val prettyDateTimeFormatter = DateTimeFormatter.ofPattern("MMM d, HH:mm")

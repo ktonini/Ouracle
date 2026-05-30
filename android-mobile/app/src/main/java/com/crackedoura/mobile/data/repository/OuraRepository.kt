@@ -354,6 +354,13 @@ class OuraRepository(
         )
         todayInsightsState.value = response.todayInsights
         syncFreshnessState.value = response.syncFreshness
+        response.syncFreshness?.let { fresh ->
+            AppLogger.i(
+                TAG,
+                "Desktop freshness status=${fresh.status} latestDay=${fresh.latestDay} " +
+                    "daysBehind=${fresh.daysBehind} message=${fresh.message?.take(120)}",
+            )
+        }
         val insightsDay = response.todayInsights?.day
         if (response.todayInsights != null && !insightsDay.isNullOrBlank()) {
             runCatching { persistInsights(insightsDay, response.todayInsights, updateLatest = true) }

@@ -8,6 +8,7 @@ import pytest
 
 from backend.src.insights import sync_freshness as sf_module
 from backend.src.insights.sync_freshness import (
+    apply_post_ingest_result,
     build_sync_freshness,
     data_lag_days,
     expected_latest_day,
@@ -18,13 +19,19 @@ from backend.src.models import Sleep
 
 @pytest.fixture()
 def patch_config(monkeypatch):
-    def _apply(values):
-        monkeypatch.setattr(
-            sf_module.config_manager,
-            "get_config",
-            lambda: dict(values),
-        )
+    store: dict = {}
 
+    def _apply(values):
+        store.clear()
+        store.update(values)
+
+    monkeypatch.setattr(sf_module.config_manager, "get_config", lambda: dict(store))
+    monkeypatch.setattr(
+        sf_module.config_manager,
+        "update_status",
+        lambda status, **kw: store.update({"status": status, **kw}),
+    )
+    monkeypatch.setattr(sf_module.config_manager, "update_config", lambda **kw: store.update(kw))
     return _apply
 
 
@@ -64,6 +71,45 @@ def test_recent_day_reports_fresh(db_session, patch_config):
     assert fresh.latest_day == yesterday.isoformat()
     assert fresh.days_behind == 0
     assert fresh.last_ingest_at == "2025-01-01T00:00:00"
+
+
+def test_fresh_status_replaces_stale_no_new_days_message(db_session, patch_config):
+    yesterday = date.today() - timedelta(days=1)
+    db_session.add(Sleep(id="s", day=yesterday, score=80))
+    db_session.commit()
+    patch_config(
+        {
+            "status": "Idle",
+            "message": (
+                "Ingest finished but no new days were added. "
+                "Request a fresh Oura export and sync again."
+            ),
+        }
+    )
+
+    fresh = build_sync_freshness(db_session)
+    assert fresh.status == "fresh"
+    assert fresh.days_behind == 0
+    assert "no new days" not in (fresh.message or "").lower()
+    assert "Up to date through" in (fresh.message or "")
+
+
+def test_post_ingest_no_advance_but_caught_up_is_success(patch_config):
+    yesterday = date.today() - timedelta(days=1)
+    patch_config({"status": "Processing"})
+    apply_post_ingest_result(yesterday, yesterday)
+    cfg = sf_module.config_manager.get_config()
+    assert cfg["status"] == "Idle"
+    assert "already up to date" in cfg["message"].lower()
+    assert "no new days were added" not in cfg["message"].lower()
+
+
+def test_post_ingest_no_advance_and_behind_warns(patch_config):
+    stale = date.today() - timedelta(days=5)
+    patch_config({"status": "Processing"})
+    apply_post_ingest_result(stale, stale)
+    cfg = sf_module.config_manager.get_config()
+    assert "no new days were added" in cfg["message"].lower()
 
 
 def test_stale_data_reports_stale_status(db_session, patch_config):

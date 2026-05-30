@@ -310,6 +310,9 @@ fun OuraMobileApp(viewModel: MainViewModel, repository: OuraRepository) {
                         insights = insights,
                         isRefreshing = uiState.isSyncing,
                         onRefresh = viewModel::syncNow,
+                        onOpenDayDetail = { day ->
+                            navController.navigate(AppDestination.DayDetail.createRoute(day))
+                        },
                     )
                 }
 

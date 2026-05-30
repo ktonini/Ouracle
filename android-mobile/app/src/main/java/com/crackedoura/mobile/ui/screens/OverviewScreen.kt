@@ -1,6 +1,5 @@
 package com.crackedoura.mobile.ui.screens
 
-import android.app.DatePickerDialog
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
@@ -21,17 +20,11 @@ import androidx.compose.foundation.pager.HorizontalPager
 import androidx.compose.foundation.pager.rememberPagerState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.outlined.CalendarMonth
-import androidx.compose.material.icons.outlined.ChevronLeft
-import androidx.compose.material.icons.outlined.ChevronRight
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.HorizontalDivider
-import androidx.compose.material3.Icon
-import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -43,7 +36,6 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import com.google.accompanist.swiperefresh.SwipeRefresh
 import com.google.accompanist.swiperefresh.SwipeRefreshIndicator
@@ -62,10 +54,10 @@ import com.crackedoura.mobile.ui.formatPercent
 import com.crackedoura.mobile.ui.formatSignedDecimal
 import com.crackedoura.mobile.ui.formatSignedDelta
 import com.crackedoura.mobile.ui.formatTimeOnly
+import com.crackedoura.mobile.ui.showDayPicker
 import com.crackedoura.mobile.ui.theme.Coral
 import com.crackedoura.mobile.ui.theme.Emerald
 import com.crackedoura.mobile.ui.theme.Ocean
-import java.time.LocalDate
 import java.time.LocalTime
 import kotlinx.coroutines.launch
 
@@ -184,59 +176,21 @@ fun OverviewScreen(
                                 fontWeight = FontWeight.Bold,
                                 color = Color.White,
                             )
-                            // Date navigation row
-                            Row(
-                                modifier = Modifier.fillMaxWidth(),
-                                verticalAlignment = Alignment.CenterVertically,
-                            ) {
-                                IconButton(
-                                    onClick = { scope.launch { pagerState.animateScrollToPage(page - 1) } },
-                                    enabled = page > 0,
-                                ) {
-                                    Icon(
-                                        imageVector = Icons.Outlined.ChevronLeft,
-                                        contentDescription = "Previous day",
-                                        tint = if (page > 0) Color.White.copy(0.7f) else Color.White.copy(0.2f),
-                                    )
-                                }
-                                Text(
-                                    text = formatDayLabel(current.day),
-                                    style = MaterialTheme.typography.titleMedium,
-                                    fontWeight = FontWeight.SemiBold,
-                                    color = Color.White.copy(alpha = 0.65f),
-                                    modifier = Modifier.weight(1f),
-                                    textAlign = TextAlign.Center,
-                                )
-                                // Calendar / date-picker icon
-                                IconButton(onClick = {
-                                    val today = LocalDate.now()
-                                    DatePickerDialog(
-                                        context,
-                                        { _, year, month, day ->
-                                            val picked = "%04d-%02d-%02d".format(year, month + 1, day)
-                                            val idx = insights.indexOfFirst { it.day == picked }
-                                            if (idx >= 0) scope.launch { pagerState.animateScrollToPage(idx) }
-                                        },
-                                        today.year, today.monthValue - 1, today.dayOfMonth,
-                                    ).show()
-                                }) {
-                                    Icon(
-                                        imageVector = Icons.Outlined.CalendarMonth,
-                                        contentDescription = "Pick date",
-                                        tint = Color.White.copy(alpha = 0.55f),
-                                    )
-                                }
-                                IconButton(
-                                    onClick = { scope.launch { pagerState.animateScrollToPage(page + 1) } },
-                                    enabled = page < insights.size - 1,
-                                ) {
-                                    Icon(
-                                        imageVector = Icons.Outlined.ChevronRight,
-                                        contentDescription = "Next day",
-                                        tint = if (page < insights.size - 1) Color.White.copy(0.7f) else Color.White.copy(0.2f),
-                                    )
-                                }
-                            }
+                            // Date navigation row (chevrons + calendar picker)
+                            val availableDays = insights.map { it.day }
+                            DayNavigatorBar(
+                                label = formatDayLabel(current.day),
+                                canPrev = page > 0,
+                                canNext = page < insights.size - 1,
+                                onPrev = { scope.launch { pagerState.animateScrollToPage(page - 1) } },
+                                onNext = { scope.launch { pagerState.animateScrollToPage(page + 1) } },
+                                onPickDate = {
+                                    showDayPicker(context, current.day, availableDays) { day ->
+                                        val idx = insights.indexOfFirst { it.day == day }
+                                        if (idx >= 0) scope.launch { pagerState.animateScrollToPage(idx) }
+                                    }
+                                },
+                            )
                             // Only show syncing pill — remove the static "N days cached" pill
                             Row(
                                 modifier = Modifier.fillMaxWidth(),
@@ -260,7 +214,11 @@ fun OverviewScreen(
 
                     // Core scores — vertical list, ring left / info right
                     item {
-                        SectionCard(title = "Core Scores") {
+                        SectionCard(
+                            title = "Core Scores",
+                            subtitle = "Tap for the full day breakdown",
+                            onClick = { onOpenDayDetail(current.day) },
+                        ) {
                             Column {
                                 ScoreListRow(
                                     label = "Readiness",
@@ -333,6 +291,7 @@ fun OverviewScreen(
                                         ?: "Needs 5 sleep nights",
                                     accent = Color(0xFF6B5BFF),
                                     modifier = Modifier.weight(1f),
+                                    onClick = { onOpenDayDetail(current.day) },
                                 )
                                 BriefingTile(
                                     title = "Activity goal",
@@ -340,6 +299,7 @@ fun OverviewScreen(
                                     caption = current.activityGoalLabel(),
                                     accent = Color(0xFFFF8B4A),
                                     modifier = Modifier.weight(1f),
+                                    onClick = { onOpenDayDetail(current.day) },
                                 )
                             }
                             Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
@@ -350,6 +310,7 @@ fun OverviewScreen(
                                         ?: "Building baseline",
                                     accent = Color(0xFF19B394),
                                     modifier = Modifier.weight(1f),
+                                    onClick = { onOpenDayDetail(current.day) },
                                 )
                                 BriefingTile(
                                     title = "Recovery share",
@@ -359,6 +320,7 @@ fun OverviewScreen(
                                     } ?: "--",
                                     accent = Color(0xFFD75A71),
                                     modifier = Modifier.weight(1f),
+                                    onClick = { onOpenDayDetail(current.day) },
                                 )
                             }
                         }
@@ -413,9 +375,11 @@ private fun BriefingTile(
     caption: String,
     accent: Color,
     modifier: Modifier = Modifier,
+    onClick: (() -> Unit)? = null,
 ) {
     Card(
-        modifier = modifier,
+        modifier = modifier
+            .then(if (onClick != null) Modifier.clickable(onClick = onClick) else Modifier),
         shape = RoundedCornerShape(22.dp),
         colors = CardDefaults.cardColors(containerColor = accent.copy(alpha = 0.10f)),
         border = BorderStroke(1.dp, accent.copy(alpha = 0.20f)),

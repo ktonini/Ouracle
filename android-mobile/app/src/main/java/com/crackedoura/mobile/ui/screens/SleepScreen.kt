@@ -6,19 +6,23 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.pager.HorizontalPager
+import androidx.compose.foundation.pager.rememberPagerState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import com.google.accompanist.swiperefresh.SwipeRefresh
@@ -28,6 +32,8 @@ import com.crackedoura.mobile.ui.DailyInsight
 import com.crackedoura.mobile.ui.formatDayLabel
 import com.crackedoura.mobile.ui.formatDurationSeconds
 import com.crackedoura.mobile.ui.formatTimeOnly
+import com.crackedoura.mobile.ui.showDayPicker
+import kotlinx.coroutines.launch
 
 // Semantic stage colors matching the glassmorphism palette
 private val DeepSleepColor = Color(0xFF2041B9)
@@ -42,11 +48,13 @@ fun SleepScreen(
     insights: List<DailyInsight>,
     isRefreshing: Boolean,
     onRefresh: () -> Unit,
+    onOpenDayDetail: (String) -> Unit,
 ) {
-    val latest = insights.lastOrNull()
-    val sparkValues = remember(insights) {
-        insights.takeLast(30).map { it.totalSleepSeconds?.div(60) }
-    }
+    val context = LocalContext.current
+    val scope = rememberCoroutineScope()
+    val pagerState = rememberPagerState(
+        initialPage = (insights.size - 1).coerceAtLeast(0),
+    ) { insights.size.coerceAtLeast(1) }
 
     SwipeRefresh(
         state = rememberSwipeRefreshState(isRefreshing),
@@ -60,80 +68,124 @@ fun SleepScreen(
             )
         },
     ) {
-        LazyColumn(
-            modifier = Modifier.padding(padding),
-            contentPadding = PaddingValues(16.dp),
-            verticalArrangement = Arrangement.spacedBy(16.dp),
-        ) {
-            item {
-                HeroCard(
-                    eyebrow = "Sleep",
-                    title = latest?.let { formatDayLabel(it.day) } ?: "No sleep data yet",
-                    subtitle = if (latest == null) {
-                        "Sync from desktop in Settings to copy sleep data from your PC."
-                    } else {
-                        latest.summary.sleepRecommendation?.takeIf { it.isNotBlank() }
-                            ?: "Total sleep ${formatDurationSeconds(latest.totalSleepSeconds)}"
-                    },
-                    accent = listOf(DeepSleepColor, SleepRingColor),
-                )
-            }
-
-            if (latest == null) return@LazyColumn
-
-            // Score ring + bedtime window
-            item {
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(12.dp),
-                ) {
-                    ScoreRingCard(
-                        label = "Sleep Score",
-                        score = latest.summary.sleepScore,
-                        subtitle = sleepQualityLabel(latest.summary.sleepScore),
-                        ringColor = SleepRingColor,
-                        modifier = Modifier.weight(1.1f),
-                        ringSize = 96,
-                        strokeWidthDp = 10,
-                    )
-                    BedtimeCard(
-                        bedtimeStart = latest.summary.bedtimeStart,
-                        bedtimeEnd = latest.summary.bedtimeEnd,
-                        modifier = Modifier.weight(1.5f),
+        if (insights.isEmpty()) {
+            LazyColumn(
+                modifier = Modifier.padding(padding),
+                contentPadding = PaddingValues(16.dp),
+                verticalArrangement = Arrangement.spacedBy(16.dp),
+            ) {
+                item {
+                    HeroCard(
+                        eyebrow = "Sleep",
+                        title = "No sleep data yet",
+                        subtitle = "Sync from desktop in Settings to copy sleep data from your PC.",
+                        accent = listOf(DeepSleepColor, SleepRingColor),
                     )
                 }
             }
+            return@SwipeRefresh
+        }
 
-            // Sleep stages bar
-            item {
-                SleepStagesCard(latest = latest)
-            }
+        HorizontalPager(
+            state = pagerState,
+            modifier = Modifier.padding(padding).fillMaxSize(),
+        ) { page ->
+            val day = insights[page]
+            val sparkValues = insights.subList(0, page + 1).takeLast(30)
+                .map { it.totalSleepSeconds?.div(60) }
 
-            // Sleep stats
-            item {
-                SectionCard(title = "Sleep detail") {
-                    StatRow("Total sleep", formatDurationSeconds(latest.totalSleepSeconds))
-                    StatRow("Deep sleep", formatDurationSeconds(latest.summary.deepSleepDuration))
-                    StatRow("REM sleep", formatDurationSeconds(latest.summary.remSleepDuration))
-                    StatRow("Awake time", formatDurationSeconds(latest.summary.awakeTime))
-                    StatRow("Nap sleep", formatDurationSeconds(latest.summary.napSleepDuration))
-                    StatRow("Efficiency", latest.summary.sleepEfficiency?.let { "$it%" } ?: "--")
-                    StatRow("Sessions", latest.summary.sleepSessionCount?.toString() ?: "--")
-                    StatRow(
-                        "Sleep need estimate",
-                        formatDurationSeconds(latest.sleepNeedEstimateSeconds),
+            LazyColumn(
+                modifier = Modifier.fillMaxSize(),
+                contentPadding = PaddingValues(16.dp),
+                verticalArrangement = Arrangement.spacedBy(16.dp),
+            ) {
+                // Day navigation: swipe between days, chevrons, or calendar picker
+                item {
+                    val availableDays = insights.map { it.day }
+                    DayNavigatorBar(
+                        label = formatDayLabel(day.day),
+                        canPrev = page > 0,
+                        canNext = page < insights.size - 1,
+                        onPrev = { scope.launch { pagerState.animateScrollToPage(page - 1) } },
+                        onNext = { scope.launch { pagerState.animateScrollToPage(page + 1) } },
+                        onPickDate = {
+                            showDayPicker(context, day.day, availableDays) { picked ->
+                                val idx = insights.indexOfFirst { it.day == picked }
+                                if (idx >= 0) scope.launch { pagerState.animateScrollToPage(idx) }
+                            }
+                        },
                     )
-                    StatRow("Sleep debt", formatDurationSeconds(latest.sleepDebtSeconds))
                 }
-            }
 
-            // 30-day sparkline
-            item {
-                SectionCard(title = "30-day sleep trend") {
-                    TrendSparkline(
-                        values = sparkValues,
-                        color = SleepRingColor,
+                item {
+                    HeroCard(
+                        eyebrow = "Sleep",
+                        title = formatDayLabel(day.day),
+                        subtitle = day.summary.sleepRecommendation?.takeIf { it.isNotBlank() }
+                            ?: "Total sleep ${formatDurationSeconds(day.totalSleepSeconds)}",
+                        accent = listOf(DeepSleepColor, SleepRingColor),
                     )
+                }
+
+                // Score ring + bedtime window
+                item {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(12.dp),
+                    ) {
+                        ScoreRingCard(
+                            label = "Sleep Score",
+                            score = day.summary.sleepScore,
+                            subtitle = sleepQualityLabel(day.summary.sleepScore),
+                            ringColor = SleepRingColor,
+                            modifier = Modifier.weight(1.1f),
+                            ringSize = 96,
+                            strokeWidthDp = 10,
+                            onClick = { onOpenDayDetail(day.day) },
+                        )
+                        BedtimeCard(
+                            bedtimeStart = day.summary.bedtimeStart,
+                            bedtimeEnd = day.summary.bedtimeEnd,
+                            modifier = Modifier.weight(1.5f),
+                        )
+                    }
+                }
+
+                // Sleep stages bar
+                item {
+                    SleepStagesCard(latest = day)
+                }
+
+                // Sleep stats
+                item {
+                    SectionCard(
+                        title = "Sleep detail",
+                        subtitle = "Tap for the full day breakdown",
+                        onClick = { onOpenDayDetail(day.day) },
+                    ) {
+                        StatRow("Total sleep", formatDurationSeconds(day.totalSleepSeconds))
+                        StatRow("Deep sleep", formatDurationSeconds(day.summary.deepSleepDuration))
+                        StatRow("REM sleep", formatDurationSeconds(day.summary.remSleepDuration))
+                        StatRow("Awake time", formatDurationSeconds(day.summary.awakeTime))
+                        StatRow("Nap sleep", formatDurationSeconds(day.summary.napSleepDuration))
+                        StatRow("Efficiency", day.summary.sleepEfficiency?.let { "$it%" } ?: "--")
+                        StatRow("Sessions", day.summary.sleepSessionCount?.toString() ?: "--")
+                        StatRow(
+                            "Sleep need estimate",
+                            formatDurationSeconds(day.sleepNeedEstimateSeconds),
+                        )
+                        StatRow("Sleep debt", formatDurationSeconds(day.sleepDebtSeconds))
+                    }
+                }
+
+                // 30-day sparkline
+                item {
+                    SectionCard(title = "30-day sleep trend") {
+                        TrendSparkline(
+                            values = sparkValues,
+                            color = SleepRingColor,
+                        )
+                    }
                 }
             }
         }

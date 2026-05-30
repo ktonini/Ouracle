@@ -3,6 +3,7 @@ package com.crackedoura.mobile.ui.screens
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -14,8 +15,14 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.outlined.CalendarMonth
+import androidx.compose.material.icons.outlined.ChevronLeft
+import androidx.compose.material.icons.outlined.ChevronRight
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
@@ -89,10 +96,13 @@ fun SectionCard(
     title: String,
     modifier: Modifier = Modifier,
     subtitle: String? = null,
+    onClick: (() -> Unit)? = null,
     content: @Composable () -> Unit,
 ) {
     Card(
-        modifier = modifier.fillMaxWidth(),
+        modifier = modifier
+            .fillMaxWidth()
+            .then(if (onClick != null) Modifier.clickable(onClick = onClick) else Modifier),
         shape = RoundedCornerShape(24.dp),
         colors = CardDefaults.cardColors(
             containerColor = Color.White.copy(alpha = 0.06f),
@@ -406,6 +416,57 @@ private fun scoreQualityLabel(score: Int?): String = when {
     else -> "Low"
 }
 
+/**
+ * Shared day-navigation row: previous-day chevron, centred date label (with year),
+ * a calendar button to jump to a date, and a next-day chevron. Used by the Today,
+ * Sleep and Trends screens so day navigation behaves consistently everywhere.
+ */
+@Composable
+fun DayNavigatorBar(
+    label: String,
+    canPrev: Boolean,
+    canNext: Boolean,
+    onPrev: () -> Unit,
+    onNext: () -> Unit,
+    onPickDate: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    Row(
+        modifier = modifier.fillMaxWidth(),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        IconButton(onClick = onPrev, enabled = canPrev) {
+            Icon(
+                imageVector = Icons.Outlined.ChevronLeft,
+                contentDescription = "Previous day",
+                tint = if (canPrev) Color.White.copy(0.7f) else Color.White.copy(0.2f),
+            )
+        }
+        Text(
+            text = label,
+            style = MaterialTheme.typography.titleMedium,
+            fontWeight = FontWeight.SemiBold,
+            color = Color.White.copy(alpha = 0.75f),
+            textAlign = TextAlign.Center,
+            modifier = Modifier.weight(1f),
+        )
+        IconButton(onClick = onPickDate) {
+            Icon(
+                imageVector = Icons.Outlined.CalendarMonth,
+                contentDescription = "Pick date",
+                tint = Color.White.copy(alpha = 0.6f),
+            )
+        }
+        IconButton(onClick = onNext, enabled = canNext) {
+            Icon(
+                imageVector = Icons.Outlined.ChevronRight,
+                contentDescription = "Next day",
+                tint = if (canNext) Color.White.copy(0.7f) else Color.White.copy(0.2f),
+            )
+        }
+    }
+}
+
 @Composable
 fun ScoreRingCard(
     label: String,
@@ -415,9 +476,11 @@ fun ScoreRingCard(
     modifier: Modifier = Modifier,
     ringSize: Int = 84,
     strokeWidthDp: Int = 9,
+    onClick: (() -> Unit)? = null,
 ) {
     Card(
-        modifier = modifier,
+        modifier = modifier
+            .then(if (onClick != null) Modifier.clickable(onClick = onClick) else Modifier),
         shape = RoundedCornerShape(24.dp),
         colors = CardDefaults.cardColors(
             containerColor = Color.White.copy(alpha = 0.06f),

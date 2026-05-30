@@ -33,6 +33,7 @@ import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.onSizeChanged
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
@@ -53,6 +54,7 @@ import com.crackedoura.mobile.ui.formatPercent
 import com.crackedoura.mobile.ui.formatSignedDelta
 import com.crackedoura.mobile.ui.insightsForWindow
 import com.crackedoura.mobile.ui.metricsForFamily
+import com.crackedoura.mobile.ui.showDayPicker
 import kotlin.math.roundToInt
 
 private data class ChartPoint(
@@ -228,6 +230,21 @@ fun TrendsScreen(
                             modifier = Modifier.weight(1f),
                         )
                     }
+                    val context = LocalContext.current
+                    val chartDays = points.map { it.insight.day }
+                    val selectedIdx = points.indexOfFirst { it.insight.day == selectedPoint?.insight?.day }
+                    DayNavigatorBar(
+                        label = selectedPoint?.insight?.day?.let(::formatDayLabel) ?: "--",
+                        canPrev = selectedIdx > 0,
+                        canNext = selectedIdx in 0 until points.lastIndex,
+                        onPrev = { points.getOrNull(selectedIdx - 1)?.let { selectedDay = it.insight.day } },
+                        onNext = { points.getOrNull(selectedIdx + 1)?.let { selectedDay = it.insight.day } },
+                        onPickDate = {
+                            showDayPicker(context, selectedPoint?.insight?.day, chartDays) { picked ->
+                                selectedDay = picked
+                            }
+                        },
+                    )
                     TrendChart(
                         points = points,
                         metric = metric,

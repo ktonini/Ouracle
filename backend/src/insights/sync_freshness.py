@@ -63,6 +63,28 @@ def ingest_advanced_data(before: Optional[date], after: Optional[date]) -> bool:
     return after is not None and (before is None or after > before)
 
 
+_NO_NEW_DAYS_PHRASE = "no new days were added"
+
+
+def _ingest_message_when_not_advanced(
+    after_latest: Optional[date],
+    *,
+    success_message: str,
+) -> str:
+    """Message after ingest when the newest local day did not move forward."""
+
+    lag = data_lag_days(after_latest)
+    if after_latest is not None and lag is not None and lag <= 0:
+        return (
+            f"{success_message.rstrip('!')}! "
+            "No new days in this export — local data is already up to date."
+        )
+    return (
+        "Ingest finished but no new days were added. "
+        "Request a fresh Oura export and sync again."
+    )
+
+
 def apply_post_ingest_result(
     before_latest: Optional[date],
     after_latest: Optional[date],
@@ -84,9 +106,9 @@ def apply_post_ingest_result(
     elif advanced:
         message = success_message
     else:
-        message = (
-            "Ingest finished but no new days were added. "
-            "Request a fresh Oura export and sync again."
+        message = _ingest_message_when_not_advanced(
+            after_latest,
+            success_message=success_message,
         )
 
     kwargs: Dict[str, Any] = {"message": message}
@@ -150,7 +172,15 @@ def build_sync_freshness(
     last_export_request = cfg.get("last_export_request_at") or None
 
     status_keyword = _classify(latest, automation_status)
-    if message is None or status_keyword in ("stale", "very_stale"):
+    stale_no_new_days_warning = (
+        message is not None
+        and _NO_NEW_DAYS_PHRASE in message.lower()
+    )
+    if (
+        message is None
+        or status_keyword in ("stale", "very_stale")
+        or (status_keyword == "fresh" and stale_no_new_days_warning)
+    ):
         message = _default_message(status_keyword, latest, automation_status, expected)
 
     mobile_enabled = bool(cfg.get("mobile_sync_enabled", False))
