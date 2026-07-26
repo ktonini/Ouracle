@@ -1,5 +1,4 @@
 import pandas as pd
-import uuid
 import logging
 from datetime import datetime
 from backend.src.models import Activity, Workout, Meditation
@@ -9,7 +8,6 @@ logger = logging.getLogger("ActivityProcessor")
 
 class ActivityProcessor(IngestionBase):
     def process_activity(self, df: pd.DataFrame):
-        # Deduplicate by day
         if 'day' in df.columns:
             df = df.drop_duplicates(subset=['day'], keep='last')
         
@@ -17,7 +15,6 @@ class ActivityProcessor(IngestionBase):
         for index, row in df.iterrows():
             day_val = self._parse_date(row.get('day'))
             
-            # Fallback for when day might be missing but timestamp exists
             if not day_val and row.get('timestamp'):
                  ts = self._parse_datetime(row.get('timestamp'))
                  if ts:
@@ -28,12 +25,10 @@ class ActivityProcessor(IngestionBase):
 
             try:
                 contributors = self._parse_json_col(row.get('contributors')) or {}
-                
-                # Start time for daily sequences is midnight
                 day_start = datetime.combine(day_val, datetime.min.time())
 
                 rec = Activity(
-                    id=str(row.get('id')) if row.get('id') else str(uuid.uuid4()),
+                    id=self._day_pk("activity", day_val),
                     day=day_val,
                     score=self._parse_int(row.get('score')),
                     steps=self._parse_int(row.get('steps')),
@@ -42,12 +37,8 @@ class ActivityProcessor(IngestionBase):
                     average_met=self._parse_float(row.get('average_met_minutes')), 
                     equivalent_walking_distance=self._parse_int(row.get('equivalent_walking_distance')),
                     contributors=contributors,
-                    
-                    # Converted sequences
                     class_5_min=self._parse_sequence_to_timestamped_list(row.get('class_5_min'), day_start, 300),
                     met=self._parse_sequence_to_timestamped_list(row.get('met'), day_start, 60),
-                    
-                    # Detailed Stats
                     high_activity_met_minutes=self._parse_int(row.get('high_activity_met_minutes')),
                     high_activity_time=self._parse_int(row.get('high_activity_time')),
                     inactivity_alerts=self._parse_int(row.get('inactivity_alerts')),
@@ -68,7 +59,7 @@ class ActivityProcessor(IngestionBase):
                 logger.error(f"Error processing activity row {index}: {e}")
                 continue
         
-        self._upsert(Activity, records, ['day'])
+        self._upsert_content_aware(Activity, records, ['day'])
 
     def process_workout(self, file_path: str):
         df = self._read_csv_robust(file_path)
@@ -78,10 +69,20 @@ class ActivityProcessor(IngestionBase):
         records = []
         for _, row in df.iterrows():
             try:
+                day_val = self._parse_date(row.get('day'))
+                start_time = self._parse_datetime(row.get('start_datetime'))
+                activity_name = row.get('activity')
+                if pd.isna(activity_name) or str(activity_name).strip() == "":
+                    activity_name = row.get('intensity')
+                wid = self._oura_or_synthetic(
+                    row,
+                    "workout",
+                    [day_val, start_time, activity_name],
+                )
                 workout = Workout(
-                    id=str(row.get('id', uuid.uuid4())),
-                    day=self._parse_date(row.get('day')),
-                    start_time=self._parse_datetime(row.get('start_datetime')),
+                    id=wid,
+                    day=day_val,
+                    start_time=start_time,
                     end_time=self._parse_datetime(row.get('end_datetime')),
                     activity=row.get('activity'),
                     calories=self._parse_float(row.get('calories')),
@@ -95,7 +96,7 @@ class ActivityProcessor(IngestionBase):
                 logger.error(f"Error parsing workout row: {e}")
                 continue
         
-        self._upsert(Workout, records, ['id'])
+        self._upsert_content_aware(Workout, records, ['id'])
 
     def process_meditation(self, file_path: str):
         df = self._read_csv_robust(file_path)
@@ -105,10 +106,17 @@ class ActivityProcessor(IngestionBase):
         records = []
         for _, row in df.iterrows():
             try:
+                day_val = self._parse_date(row.get('day'))
+                start_time = self._parse_datetime(row.get('start_datetime'))
+                mid = self._oura_or_synthetic(
+                    row,
+                    "meditation",
+                    [day_val, start_time, row.get('type')],
+                )
                 session = Meditation(
-                    id=str(row.get('id', uuid.uuid4())),
-                    day=self._parse_date(row.get('day')),
-                    start_time=self._parse_datetime(row.get('start_datetime')),
+                    id=mid,
+                    day=day_val,
+                    start_time=start_time,
                     end_time=self._parse_datetime(row.get('end_datetime')),
                     type=row.get('type'),
                     mood=row.get('mood')
@@ -118,7 +126,7 @@ class ActivityProcessor(IngestionBase):
                 logger.error(f"Error parsing session row: {e}")
                 continue
         
-        self._upsert(Meditation, records, ['id'])
+        self._upsert_content_aware(Meditation, records, ['id'])
 
     def process_stress(self, df: pd.DataFrame):
         """Merges daytime stress data into the Activity table."""
@@ -130,7 +138,6 @@ class ActivityProcessor(IngestionBase):
         grouped = df.groupby('day')
         
         for day, group in grouped:
-            # Convert group to list of dicts for the JSON column
             stress_list = []
             for _, row in group.iterrows():
                 stress_list.append({
@@ -139,17 +146,17 @@ class ActivityProcessor(IngestionBase):
                     "recovery": self._parse_int(row.get('recovery_value'))
                 })
             
-            # Upsert specifically into Activity
-            # Note: We query directly to update just this column to avoid wiping others
-            # This logic mimics the previous one but we should ideally support partial updates in _upsert
-            # For now, we fetch-and-update
             existing = self.session.query(Activity).filter(Activity.day == day).first()
             if existing:
-                existing.stress = stress_list
+                if existing.stress != stress_list:
+                    existing.stress = stress_list
+                    self._record_counts(updated=1)
+                else:
+                    self._record_counts(unchanged=1)
             else:
-                # Create placeholder if missing
-                rec = Activity(day=day, stress=stress_list, id=str(uuid.uuid4()))
+                rec = Activity(day=day, stress=stress_list, id=self._day_pk("activity", day))
                 self.session.add(rec)
+                self._record_counts(inserted=1)
         
         try:
             self.session.commit()

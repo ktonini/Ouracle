@@ -1,12 +1,20 @@
 import { useEffect, useMemo, useState } from 'react';
-import { api, type AnomalyResult, type CorrelationResult, type MetricSpec, type SavedInvestigation } from '@/lib/api';
+import {
+  api,
+  type AnomalyResult,
+  type CorrelationResult,
+  type InterestingCorrelation,
+  type MetricSpec,
+  type SavedInvestigation,
+} from '@/lib/api';
 import { CorrelationPanel } from '@/components/analysis/CorrelationPanel';
+import { InterestingCorrelationsPanel } from '@/components/analysis/InterestingCorrelationsPanel';
 import { AnomalyList } from '@/components/analysis/AnomalyList';
 import { SavedInvestigationsPanel } from '@/components/analysis/SavedInvestigationsPanel';
 import { Button } from '@/components/ui/button';
 import { cn } from '@/lib/utils';
 
-type Tab = 'correlate' | 'anomalies' | 'saved';
+type Tab = 'discover' | 'correlate' | 'anomalies' | 'saved';
 
 const DEFAULT_X = 'sleep_session.bedtime_start_minutes';
 const DEFAULT_Y = 'readiness.score';
@@ -17,7 +25,7 @@ const RANGES = [
 ];
 
 export function ExplorerView() {
-  const [tab, setTab] = useState<Tab>('correlate');
+  const [tab, setTab] = useState<Tab>('discover');
   const [catalog, setCatalog] = useState<MetricSpec[]>([]);
   const [xMetric, setXMetric] = useState(DEFAULT_X);
   const [yMetric, setYMetric] = useState(DEFAULT_Y);
@@ -26,6 +34,10 @@ export function ExplorerView() {
   const [result, setResult] = useState<CorrelationResult | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+
+  const [interesting, setInteresting] = useState<InterestingCorrelation[]>([]);
+  const [discoverLoading, setDiscoverLoading] = useState(false);
+  const [discoverError, setDiscoverError] = useState<string | null>(null);
 
   const [anomalies, setAnomalies] = useState<AnomalyResult[]>([]);
   const [anomalyLoading, setAnomalyLoading] = useState(false);
@@ -41,6 +53,16 @@ export function ExplorerView() {
   }, [range]);
 
   useEffect(() => { api.getAnalysisCatalog().then(setCatalog).catch(() => setCatalog([])); }, []);
+
+  useEffect(() => {
+    if (tab !== 'discover') return;
+    setDiscoverLoading(true);
+    setDiscoverError(null);
+    api.getInterestingCorrelations(startDate, endDate)
+      .then(setInteresting)
+      .catch((e) => setDiscoverError(e.message))
+      .finally(() => setDiscoverLoading(false));
+  }, [tab, startDate, endDate]);
 
   useEffect(() => {
     if (tab !== 'correlate') return;
@@ -68,6 +90,13 @@ export function ExplorerView() {
   };
   useEffect(() => { if (tab === 'saved') refreshInvestigations(); }, [tab]);
 
+  const handleInspect = (item: InterestingCorrelation) => {
+    setXMetric(item.x_metric);
+    setYMetric(item.y_metric);
+    setLag(item.lag_days);
+    setTab('correlate');
+  };
+
   const handleSaveCurrent = async () => {
     if (!result) return;
     const xLabel = catalog.find(c => c.path === xMetric)?.label ?? xMetric;
@@ -82,22 +111,41 @@ export function ExplorerView() {
     refreshInvestigations();
   };
 
+  const tabLabels: { id: Tab; label: string }[] = [
+    { id: 'discover', label: 'Discover' },
+    { id: 'correlate', label: 'Correlate' },
+    { id: 'anomalies', label: 'Anomalies' },
+    { id: 'saved', label: 'Saved' },
+  ];
+
   return (
     <div className="p-6 md:p-8 space-y-6 max-w-5xl mx-auto animate-fadeIn">
       <div>
         <h1 className="font-serif text-3xl text-white tracking-wide">Explorer</h1>
-        <p className="text-sm text-white/40 mt-1">Correlate metrics, surface local anomalies, save investigations.</p>
+        <p className="text-sm text-white/40 mt-1">Discover correlations, drill into pairs, surface anomalies, save investigations.</p>
       </div>
 
-      <div className="flex gap-1">
-        {(['correlate', 'anomalies', 'saved'] as Tab[]).map((t) => (
-          <Button key={t} variant="ghost" size="sm" onClick={() => setTab(t)}
-            className={cn('rounded-lg text-xs h-7 capitalize',
-              tab === t ? 'glass-tab text-white' : 'text-white/40 hover:text-white/70')}>
-            {t === 'correlate' ? 'Correlate' : t === 'anomalies' ? 'Anomalies' : 'Saved'}
+      <div className="flex gap-1 flex-wrap">
+        {tabLabels.map(({ id, label }) => (
+          <Button key={id} variant="ghost" size="sm" onClick={() => setTab(id)}
+            className={cn('rounded-lg text-xs h-7',
+              tab === id ? 'glass-tab text-white' : 'text-white/40 hover:text-white/70')}>
+            {label}
           </Button>
         ))}
       </div>
+
+      {tab === 'discover' && (
+        <InterestingCorrelationsPanel
+          results={interesting}
+          loading={discoverLoading}
+          error={discoverError}
+          range={range}
+          ranges={RANGES}
+          onRangeChange={setRange}
+          onInspect={handleInspect}
+        />
+      )}
 
       {tab === 'correlate' && (
         <CorrelationPanel

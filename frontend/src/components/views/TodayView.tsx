@@ -2,7 +2,6 @@ import { useEffect, useState } from 'react';
 import { useDashboard } from '@/contexts/DashboardContext';
 import { buildDaySummary } from '@/lib/day-summary';
 import { MetricPill } from '@/components/health/MetricPill';
-import { MiniTrendStrip } from '@/components/health/MiniTrendStrip';
 import { HeartPulse, Moon, Flame, Sparkles, ArrowUpRight, ChevronRight, Footprints, Heart, Zap, Tag } from 'lucide-react';
 import { format } from 'date-fns';
 import type { AppView } from '@/types/app-view';
@@ -34,6 +33,7 @@ function getScoreLabel(score: number): string {
 
 export function TodayView({ onNavigate, timeOfDay }: TodayViewProps) {
   const { data, isDataLoading, selectedDate } = useDashboard();
+
   const [animateIn, setAnimateIn] = useState(false);
   const dayKey = format(selectedDate, 'yyyy-MM-dd');
   const insights = useInsights(dayKey);
@@ -238,14 +238,6 @@ export function TodayView({ onNavigate, timeOfDay }: TodayViewProps) {
           />
         </div>
       )}
-
-      {/* 30-Day Trends */}
-      <div className="rounded-xl glass-card p-4 space-y-3">
-        <p className="text-[10px] uppercase tracking-widest text-white/30">30-Day Trends</p>
-        <MiniTrendStrip metric="sleep.score" label="Sleep" color="#A2D3E8" />
-        <MiniTrendStrip metric="readiness.score" label="Readiness" color="#4ECDC4" />
-        <MiniTrendStrip metric="activity.score" label="Activity" color="#FFD166" />
-      </div>
     </div>
   );
 }

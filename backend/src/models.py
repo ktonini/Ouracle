@@ -200,6 +200,16 @@ class CardiovascularAge(Base):
     vascular_age: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
 
 
+class IngestState(Base):
+    """Key/value store for incremental-ingest detection state."""
+
+    __tablename__ = "ingest_state"
+
+    key: Mapped[str] = mapped_column(String, primary_key=True)
+    value: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+
+
 # --- Chat persistence models ---
 
 class ChatThread(Base):

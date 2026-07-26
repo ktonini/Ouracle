@@ -137,7 +137,7 @@ export function normalizeTimeSeriesData(
     if (data && data.length > 0) {
         let firstVal = data[0][primaryKey];
         if (typeof firstVal === 'string') {
-            try { firstVal = JSON.parse(firstVal); } catch (e) { }
+            try { firstVal = JSON.parse(firstVal); } catch { /* Preserve malformed source text. */ }
         }
         const isIntradayNested = Array.isArray(firstVal) || (typeof firstVal === 'object' && firstVal !== null && Array.isArray((firstVal as any).items));
         isFlatIntraday = data[0]?.date?.includes('T');
@@ -222,7 +222,7 @@ export function normalizeTimeSeriesData(
         dayData = data[targetIndex];
         let val = dayData[primaryKey];
         if (typeof val === 'string') {
-            try { val = JSON.parse(val); } catch (e) { }
+            try { val = JSON.parse(val); } catch { /* Preserve malformed source text. */ }
         }
         rawItems = Array.isArray(val) ? val : (val as any)?.items;
     }

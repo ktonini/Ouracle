@@ -4,6 +4,7 @@ export type AppView =
   | 'readiness'
   | 'activity'
   | 'resilience'
+  | 'battery'
   | 'trends'
   | 'explorer'
   | 'journal'

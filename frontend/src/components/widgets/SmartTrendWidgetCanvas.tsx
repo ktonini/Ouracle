@@ -84,7 +84,7 @@ export function SmartTrendWidgetCanvas({ widget, date, chartType = 'area' }: Sma
                 // Default to last 7 days relative to today for new widgets
                 return { startDate: format(subDays(new Date(today), 7), 'yyyy-MM-dd'), endDate: today };
         }
-    }, [widget.config.dateRange, date, widget.config.dataKey]);
+    }, [widget.config.dateRange, date, widget.config.dataKey, chartType]);
 
     // Determine keys to fetch
     const keysToFetch = useMemo(() => {

@@ -3,6 +3,7 @@ import { TrendingUp, ArrowUpDown } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { cn } from '@/lib/utils';
 import { api } from '@/lib/api';
+import { useDashboard } from '@/contexts/DashboardContext';
 
 const METRIC_PRESETS = [
   { id: 'sleep.score', label: 'Sleep Score', color: '#A2D3E8' },
@@ -20,18 +21,44 @@ const RANGES = [
   { label: '1y', days: 365 },
 ];
 
+type MetricPreset = (typeof METRIC_PRESETS)[number];
+type RangePreset = (typeof RANGES)[number];
+
+function rangeForDays(days: number): RangePreset {
+  return RANGES.find((r) => r.days === days) ?? { label: `${days}d`, days };
+}
+
 export function TrendsView() {
-  const [selectedMetric, setSelectedMetric] = useState(METRIC_PRESETS[0]);
-  const [range, setRange] = useState(RANGES[1]);
+  const { trendFocus } = useDashboard();
+  const [selectedMetric, setSelectedMetric] = useState<MetricPreset>(METRIC_PRESETS[0]);
+  const [range, setRange] = useState<RangePreset>(RANGES[1]);
   const [data, setData] = useState<{ date: string; value: number }[]>([]);
   const [loading, setLoading] = useState(false);
 
   useEffect(() => {
-    setLoading(true);
-    const end = new Date().toISOString().split('T')[0];
-    const start = new Date(new Date().setDate(new Date().getDate() - range.days)).toISOString().split('T')[0];
+    if (!trendFocus) return;
+    const preset = METRIC_PRESETS.find((m) => m.id === trendFocus.metricId);
+    if (preset) {
+      setSelectedMetric(preset);
+    } else {
+      setSelectedMetric({
+        id: trendFocus.metricId,
+        label: trendFocus.label ?? trendFocus.metricId,
+        color: trendFocus.color ?? '#A2D3E8',
+      });
+    }
+    setRange(rangeForDays(trendFocus.rangeDays ?? 30));
+  }, [trendFocus]);
 
-    api.getQuery(selectedMetric.id, start, end)
+  useEffect(() => {
+    setLoading(true);
+    const end = trendFocus?.endDate ?? new Date().toISOString().split('T')[0];
+    const endDate = new Date(end);
+    const start = new Date(endDate);
+    start.setDate(start.getDate() - range.days);
+    const startStr = start.toISOString().split('T')[0];
+
+    api.getQuery(selectedMetric.id, startStr, end)
       .then((res) => {
         if (Array.isArray(res)) {
           setData(res.map((d: any) => ({ date: d.day || d.date, value: d.value ?? d.score })));
@@ -39,7 +66,7 @@ export function TrendsView() {
       })
       .catch(() => {})
       .finally(() => setLoading(false));
-  }, [selectedMetric, range]);
+  }, [selectedMetric, range, trendFocus?.endDate]);
 
   const values = data.map(d => d.value).filter(v => v != null);
   const min = values.length ? Math.min(...values) : 0;

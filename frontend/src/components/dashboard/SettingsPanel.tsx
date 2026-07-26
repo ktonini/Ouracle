@@ -5,15 +5,14 @@ import { Label } from "@/components/ui/label";
 import { X, Loader2, Copy, LogOut, RefreshCw } from "lucide-react";
 import { cn, parseLocalDate } from "@/lib/utils";
 import { Switch } from "@/components/ui/switch";
-import { api, type AutomationStatusResponse, type MobileSyncSettings } from '@/lib/api';
+import { api, type AutomationStatusResponse, type MobileSyncSettings, type ActivityLogEntry } from '@/lib/api';
 import {
     automationStatusLabel,
     isOuraSessionActive,
     needsOuraReauth,
 } from '@/lib/automation-status';
 import { otpExpiryHint } from '@/lib/otp-timing';
-import { formatDistanceToNow } from 'date-fns';
-import { isAutomationBusy, syncStatusHeadline, syncStatusSubline } from '@/lib/sync-display';
+import { isAutomationBusy, isWaitingForExport, nextAutoSyncLabel, syncStatusHeadline, syncStatusSubline } from '@/lib/sync-display';
 import { useSyncFreshness } from '@/hooks/useInsights';
 import { SyncFreshnessChip } from '@/components/health/InsightsPanels';
 
@@ -38,9 +37,10 @@ interface AutomationState {
 export function SettingsPanel({ onClose }: SettingsPanelProps) {
     const [automation, setAutomation] = useState<AutomationState | null>(null);
     const [loading, setLoading] = useState(false);
-    const syncBusy = loading || isAutomationBusy(automation?.status);
+    const syncBusy = loading || isAutomationBusy(automation?.status) || isWaitingForExport(automation?.status);
     const { freshness, refresh: refreshFreshness } = useSyncFreshness(syncBusy ? 5_000 : 60_000);
     const [error, setError] = useState<string | null>(null);
+    const [rebuildNotice, setRebuildNotice] = useState<string | null>(null);
     const [email, setEmail] = useState('');
     const [otp, setOtp] = useState('');
 
@@ -54,6 +54,7 @@ export function SettingsPanel({ onClose }: SettingsPanelProps) {
     const [mobileSyncHost, setMobileSyncHost] = useState("0.0.0.0");
     const [mobileSyncPort, setMobileSyncPort] = useState("8037");
     const [mobileSyncWindowDays, setMobileSyncWindowDays] = useState("180");
+    const [activityEntries, setActivityEntries] = useState<ActivityLogEntry[]>([]);
 
     const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
@@ -79,9 +80,19 @@ export function SettingsPanel({ onClose }: SettingsPanelProps) {
         }
     }, [mapAutomationStatus]);
 
+    const fetchActivity = useCallback(async () => {
+        try {
+            const entries = await api.getActivityLog(80);
+            setActivityEntries(entries);
+        } catch (err) {
+            console.error("Failed to fetch activity log", err);
+        }
+    }, []);
+
     // Fetch initial state on mount
     useEffect(() => {
         fetchStatus();
+        fetchActivity();
         api.getSettings()
             .then(data => {
                 if (data.daily_sync_time) setDailySyncTime(data.daily_sync_time);
@@ -106,6 +117,29 @@ export function SettingsPanel({ onClose }: SettingsPanelProps) {
         return () => {
             if (pollRef.current) clearInterval(pollRef.current);
         };
+    }, [fetchStatus, fetchActivity]);
+
+    // Keep activity feed fresh while the panel is open / sync is busy / export wait is active.
+    useEffect(() => {
+        const busy = isAutomationBusy(automation?.status) || isWaitingForExport(automation?.status) || loading;
+        const id = setInterval(() => {
+            fetchActivity();
+            if (busy) fetchStatus();
+        }, busy ? 4_000 : 15_000);
+        return () => clearInterval(id);
+    }, [automation?.status, loading, fetchActivity, fetchStatus]);
+
+    const handleAutoDownload = useCallback(async () => {
+        setLoading(true);
+        setError(null);
+        try {
+            await api.downloadExport();
+            await fetchStatus();
+        } catch (err: any) {
+            setError(err?.message || 'Download failed');
+        } finally {
+            setLoading(false);
+        }
     }, [fetchStatus]);
 
     const startPolling = useCallback(() => {
@@ -147,20 +181,7 @@ export function SettingsPanel({ onClose }: SettingsPanelProps) {
                 console.error("Polling error", err);
             }
         }, 5000);
-    }, [mapAutomationStatus, refreshFreshness]);
-
-    const handleAutoDownload = async () => {
-        setLoading(true);
-        setError(null);
-        try {
-            await api.downloadExport();
-            await fetchStatus();
-        } catch (err: any) {
-            setError(err?.message || 'Download failed');
-        } finally {
-            setLoading(false);
-        }
-    };
+    }, [fetchStatus, handleAutoDownload, mapAutomationStatus, refreshFreshness]);
 
     const handleStartLogin = async () => {
         if (!email.trim()) return;
@@ -302,9 +323,11 @@ export function SettingsPanel({ onClose }: SettingsPanelProps) {
         if (!file) return;
         setLoading(true);
         setError(null);
+        setRebuildNotice(null);
         try {
             await api.uploadZip(file);
             await fetchStatus();
+            refreshFreshness();
         } catch (err: any) {
             setError(err?.message || 'Upload failed');
         } finally {
@@ -313,7 +336,31 @@ export function SettingsPanel({ onClose }: SettingsPanelProps) {
         }
     };
 
+    const handleRebuildIngest = async () => {
+        const confirmed = window.confirm(
+            'Clear incremental ingest cache?\n\n' +
+            'Your existing data stays in the database. The next sync or ZIP upload will ' +
+            're-read every export file (slower once). Use this after restoring a database ' +
+            'backup or if sync seems to skip data it should import.',
+        );
+        if (!confirmed) return;
+
+        setLoading(true);
+        setError(null);
+        setRebuildNotice(null);
+        try {
+            const data = await api.rebuildIngest();
+            setRebuildNotice(data.message);
+            refreshFreshness();
+        } catch (err: any) {
+            setError(err?.message || 'Failed to reset ingest cache');
+        } finally {
+            setLoading(false);
+        }
+    };
+
     const isWaitingForOtp = needsOuraReauth(automation?.status, automation?.message);
+    const waitingForExport = isWaitingForExport(automation?.status);
     const isExporting = isAutomationBusy(automation?.status);
     const isError = automation?.status === 'Error';
     const isLoggedIn = automation?.loggedIn === true && !isWaitingForOtp && !isError;
@@ -325,6 +372,8 @@ export function SettingsPanel({ onClose }: SettingsPanelProps) {
         })
         : null;
     const isBusy = loading || isExporting;
+    const nextSyncLabel = nextAutoSyncLabel(automation?.nextRun, dailySyncTime);
+
     const connectionLabel = automation
         ? automationStatusLabel({
             status: automation.status,
@@ -358,6 +407,7 @@ export function SettingsPanel({ onClose }: SettingsPanelProps) {
                             <div className={cn(
                                 "h-2.5 w-2.5 rounded-full shrink-0",
                                 isWaitingForOtp ? "bg-yellow-500 animate-pulse" :
+                                waitingForExport ? "bg-amber-400/90" :
                                 isLoggedIn && !isError ? "bg-green-500" :
                                 isExporting ? "bg-yellow-500 animate-pulse" :
                                 isError ? "bg-red-500" :
@@ -422,6 +472,12 @@ export function SettingsPanel({ onClose }: SettingsPanelProps) {
                         {/* Exporting message */}
                         {isExporting && automation?.message && (
                             <p className="text-xs text-muted-foreground">{automation.message}</p>
+                        )}
+
+                        {waitingForExport && automation?.message && (
+                            <p className="text-xs text-amber-100/85 bg-amber-500/10 rounded-md px-3 py-2 leading-relaxed">
+                                {automation.message}
+                            </p>
                         )}
 
                         {/* Login form — only when not logged in */}
@@ -569,13 +625,15 @@ export function SettingsPanel({ onClose }: SettingsPanelProps) {
                             }
                         </Button>
                         <p className="text-[10px] text-muted-foreground text-center">
-                            Downloads a ready export first, then requests a new one if needed
+                            {waitingForExport
+                                ? "Checks for a ready export first (does not request another). Generation can take days."
+                                : "Downloads a ready export first, then requests a new one if needed. Generation can take days; the app keeps checking after restart."}
                         </p>
                     </div>
 
-                    {automation?.nextRun && (
+                    {nextSyncLabel && (
                         <p className="text-xs text-muted-foreground">
-                            Next auto-sync: {formatDistanceToNow(parseLocalDate(automation.nextRun), { addSuffix: true })}
+                            Next auto-sync: {nextSyncLabel}
                         </p>
                     )}
 
@@ -586,10 +644,81 @@ export function SettingsPanel({ onClose }: SettingsPanelProps) {
                                 type="file"
                                 accept=".zip"
                                 onChange={handleFileUpload}
-                                disabled={loading}
+                                disabled={isBusy}
                                 className="cursor-pointer flex-1 text-xs"
                             />
                         </div>
+                    </div>
+
+                    <div className="space-y-2 pt-1 border-t border-white/[0.06]">
+                        <Label className="text-xs text-muted-foreground">Troubleshooting</Label>
+                        <Button
+                            variant="outline"
+                            className="w-full"
+                            onClick={handleRebuildIngest}
+                            disabled={isBusy}
+                        >
+                            {loading ? (
+                                <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                            ) : (
+                                <RefreshCw className="mr-2 h-4 w-4" />
+                            )}
+                            Force full re-import
+                        </Button>
+                        <p className="text-[10px] text-muted-foreground leading-relaxed">
+                            Clears fast-skip fingerprints only. Sync or upload an export afterward to
+                            re-parse all files.
+                        </p>
+                        {rebuildNotice && (
+                            <p className="text-xs text-score-green bg-score-green/10 rounded-md px-3 py-2">
+                                {rebuildNotice}
+                            </p>
+                        )}
+                    </div>
+                </div>
+
+                {/* ─── Activity ─── */}
+                <div className="space-y-3">
+                    <h3 className="text-[10px] font-medium text-white/40 uppercase tracking-[0.24em]">Activity</h3>
+                    <div className="glass-card rounded-2xl p-4 space-y-3">
+                        <p className="text-[10px] text-white/40 leading-relaxed">
+                            Recent sync steps — curated for clarity (not the full debug log).
+                        </p>
+                        {activityEntries.length === 0 ? (
+                            <p className="text-xs text-muted-foreground">No activity yet.</p>
+                        ) : (
+                            <div className="max-h-56 overflow-y-auto space-y-2 pr-1">
+                                {activityEntries.map((entry, index) => (
+                                    <div
+                                        key={`${entry.ts}-${index}`}
+                                        className="text-[11px] leading-snug border-b border-white/[0.04] pb-2 last:border-0 last:pb-0"
+                                    >
+                                        <div className="flex items-center justify-between gap-2 mb-0.5">
+                                            <span className={cn(
+                                                "uppercase tracking-wider text-[9px]",
+                                                entry.level === "error" ? "text-living-coral" :
+                                                entry.level === "success" ? "text-score-green" :
+                                                entry.level === "warning" ? "text-amber-300/90" :
+                                                "text-white/35",
+                                            )}>
+                                                {entry.category || entry.level}
+                                            </span>
+                                            <span className="text-white/30 tabular-nums shrink-0">
+                                                {entry.ts
+                                                    ? new Date(entry.ts).toLocaleString([], {
+                                                        month: "short",
+                                                        day: "numeric",
+                                                        hour: "2-digit",
+                                                        minute: "2-digit",
+                                                    })
+                                                    : "—"}
+                                            </span>
+                                        </div>
+                                        <p className="text-white/75">{entry.message}</p>
+                                    </div>
+                                ))}
+                            </div>
+                        )}
                     </div>
                 </div>
 
@@ -773,7 +902,7 @@ export function SettingsPanel({ onClose }: SettingsPanelProps) {
                                 try {
                                     const text = await file.text();
                                     const raw = JSON.parse(text);
-                                    let payload = raw.dashboard?.dashboards ? raw.dashboard : raw;
+                                    const payload = raw.dashboard?.dashboards ? raw.dashboard : raw;
                                     if (!payload.dashboards && !payload.widgets) {
                                         setError("Invalid layout file");
                                         return;

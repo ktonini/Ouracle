@@ -155,13 +155,22 @@ function formatValue(c: ContributorSummary): string {
   return c.unit && c.unit !== 'score' ? `${formatted} ${c.unit}` : formatted;
 }
 
+function contributorValueFormat(c: ContributorSummary): (value: number) => string {
+  return (value: number) => {
+    const formatted = Number.isInteger(value) ? String(value) : value.toFixed(1);
+    return c.unit && c.unit !== 'score' ? `${formatted} ${c.unit}` : formatted;
+  };
+}
+
 function ContributorTile({
   contributor: c,
   history,
+  dates,
   feature = false,
 }: {
   contributor: ContributorSummary;
   history: (number | null)[];
+  dates?: string[];
   feature?: boolean;
 }) {
   const delta = deltaIndicator(history);
@@ -200,7 +209,13 @@ function ContributorTile({
 
       {hasHistory && (
         <div className="-mx-1 mt-auto">
-          <Sparkline data={history} status={c.status} height={feature ? 56 : 36} />
+          <Sparkline
+            data={history}
+            dates={dates}
+            status={c.status}
+            height={feature ? 56 : 36}
+            valueFormatter={contributorValueFormat(c)}
+          />
         </div>
       )}
     </div>
@@ -210,9 +225,11 @@ function ContributorTile({
 function HeroCard({
   contributor: c,
   history,
+  dates,
 }: {
   contributor: ContributorSummary;
   history: (number | null)[];
+  dates?: string[];
 }) {
   const delta = deltaIndicator(history);
   const hasHistory = history.some((v) => v != null);
@@ -246,7 +263,14 @@ function HeroCard({
         </div>
         {hasHistory && (
           <div className="flex-1 min-w-[180px] max-w-[280px]">
-            <Sparkline data={history} status={c.status} height={72} showAxis />
+            <Sparkline
+              data={history}
+              dates={dates}
+              status={c.status}
+              height={72}
+              showAxis
+              valueFormatter={contributorValueFormat(c)}
+            />
             <p className="text-[10px] uppercase tracking-wider text-white/35 mt-1 text-right">
               Last 7 days
             </p>
@@ -329,7 +353,7 @@ export function ContributorGrid({
     () => (variant === 'full' ? present.map((c) => c.source_path) : []),
     [present, variant],
   );
-  const history = useContributorHistory(variant === 'full' ? day : null, paths);
+  const { history, axis } = useContributorHistory(variant === 'full' ? day : null, paths);
 
   if (!items || items.length === 0) return null;
 
@@ -377,7 +401,11 @@ export function ContributorGrid({
       </div>
 
       {heroItem && (
-        <HeroCard contributor={heroItem} history={history.get(heroItem.source_path) ?? []} />
+        <HeroCard
+          contributor={heroItem}
+          history={history.get(heroItem.source_path) ?? []}
+          dates={axis}
+        />
       )}
 
       {tileItems.length > 0 && (
@@ -387,6 +415,7 @@ export function ContributorGrid({
               key={c.key}
               contributor={c}
               history={history.get(c.source_path) ?? []}
+              dates={axis}
             />
           ))}
         </div>

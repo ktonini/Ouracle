@@ -26,7 +26,7 @@ export const WidgetRegistry = ({ widget, data, date, onUpdate }: WidgetRegistryP
     };
 
     switch (widget.type) {
-        case 'score':
+        case 'score': {
             const score = resolveData(widget.config.dataKey || '') || 0;
             const scoreLabel = widget.config.dataKey || 'Score';
             return (
@@ -36,6 +36,7 @@ export const WidgetRegistry = ({ widget, data, date, onUpdate }: WidgetRegistryP
                     color={widget.config.color}
                 />
             );
+        }
         case 'trend':
             return (
                 <SmartTrendWidgetCanvas
@@ -44,7 +45,7 @@ export const WidgetRegistry = ({ widget, data, date, onUpdate }: WidgetRegistryP
                     onUpdate={onUpdate}
                 />
             );
-        case 'metric':
+        case 'metric': {
             const metricValue = resolveData(widget.config.dataKey || '') || 0;
             const metricLabel = widget.config.dataKey || 'Metric';
 
@@ -67,7 +68,8 @@ export const WidgetRegistry = ({ widget, data, date, onUpdate }: WidgetRegistryP
                     color={widget.config.color}
                 />
             );
-        case 'bar':
+        }
+        case 'bar': {
             let barData = resolveData(widget.config.dataKey || '') || [];
 
             // Static bar chart from object data (e.g., contributor scores)
@@ -88,6 +90,7 @@ export const WidgetRegistry = ({ widget, data, date, onUpdate }: WidgetRegistryP
             }
 
             return <SmartTrendWidgetCanvas widget={widget} date={date || new Date().toISOString()} chartType="bar" />;
+        }
         case 'table':
             return (
                 <SmartTrendWidgetCanvas
@@ -96,7 +99,7 @@ export const WidgetRegistry = ({ widget, data, date, onUpdate }: WidgetRegistryP
                     chartType="table"
                 />
             );
-        case 'radar':
+        case 'radar': {
             let radarData = resolveData(widget.config.dataKey || '') || [];
 
             if (radarData && !Array.isArray(radarData) && typeof radarData === 'object') {
@@ -115,7 +118,8 @@ export const WidgetRegistry = ({ widget, data, date, onUpdate }: WidgetRegistryP
                     color={widget.config.color}
                 />
             );
-        case 'json':
+        }
+        case 'json': {
             const isRoot = !widget.config.dataKey || widget.config.dataKey === 'root';
             const jsonData = resolveData(widget.config.dataKey || 'root');
 
@@ -126,6 +130,7 @@ export const WidgetRegistry = ({ widget, data, date, onUpdate }: WidgetRegistryP
                     fetchFullDump={isRoot}
                 />
             );
+        }
         default:
             return (
                 <div className="flex items-center justify-center h-full text-muted-foreground">

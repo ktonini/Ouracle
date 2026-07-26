@@ -141,6 +141,23 @@ def test_otp_needed_reports_blocked_status(db_session, patch_config):
     assert "OTP" in (fresh.message or "")
 
 
+def test_next_run_ignores_stale_persisted_config(db_session, patch_config):
+    from datetime import datetime
+
+    from backend.src.scheduling import compute_next_daily_run
+
+    patch_config(
+        {
+            "status": "Idle",
+            "schedule_time": "23:59",
+            "next_run": "2020-01-01 00:00:00",
+        }
+    )
+    fresh = build_sync_freshness(db_session)
+    expected = compute_next_daily_run(datetime.now(), "23:59").strftime("%Y-%m-%d %H:%M:%S")
+    assert fresh.next_run == expected
+
+
 def test_mobile_server_state_is_surfaced(db_session, patch_config):
     patch_config({"status": "Idle", "mobile_sync_enabled": True})
 

@@ -1,5 +1,6 @@
 import { Button } from '@/components/ui/button';
 import { cn } from '@/lib/utils';
+import { lagSummary } from '@/lib/correlation-copy';
 import type { CorrelationResult, MetricSpec } from '@/lib/api';
 
 interface RangeOption { label: string; days: number; }
@@ -60,16 +61,23 @@ export function CorrelationPanel(p: Props) {
         </div>
 
         <div className="flex flex-wrap items-end gap-4">
-          <label className="text-xs text-white/40 font-medium space-y-1">
+          <label className="text-xs text-white/40 font-medium space-y-1 min-w-[200px] flex-1">
             <span>Lag (days)</span>
             <div className="flex items-center gap-2">
               <input type="range" min={-7} max={7} value={p.lag}
                 onChange={(e) => p.onLagChange(parseInt(e.target.value, 10))}
-                className="accent-enso-blue" />
+                className="accent-enso-blue flex-1" />
               <span className="text-white text-sm w-10 text-right tabular-nums">
                 {p.lag > 0 ? `+${p.lag}` : p.lag}
               </span>
             </div>
+            <p className="text-[11px] text-white/35 leading-snug pt-1 max-w-md">
+              {lagSummary(
+                p.lag,
+                p.catalog.find((m) => m.path === p.xMetric)?.label ?? p.xMetric,
+                p.catalog.find((m) => m.path === p.yMetric)?.label ?? p.yMetric,
+              )}
+            </p>
           </label>
 
           <div className="flex gap-1">

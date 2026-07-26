@@ -1,7 +1,7 @@
 {
   "name": "cracked-oura",
   "private": true,
-  "version": "0.2.0",
+  "version": "0.3.1",
   "description": "Cracked Oura Dashboard",
   "author": "Elmo Ahorinta",
   "type": "module",
@@ -9,9 +9,10 @@
   "scripts": {
     "dev": "concurrently \"npm run dev:react\" \"npm run dev:electron\"",
     "dev:react": "vite",
-    "dev:electron": "wait-on tcp:5188 && tsc -p electron/tsconfig.json && node -e \"require('fs').writeFileSync('dist-electron/package.json',JSON.stringify({type:'commonjs'}))\" && cross-env NODE_ENV=development electron .",
+    "dev:electron": "wait-on tcp:5188 && tsc -p electron/tsconfig.json && node scripts/copy-electron-assets.cjs && cross-env NODE_ENV=development electron .",
     "build:backend": "node scripts/build-backend.cjs",
-    "build": "tsc -b && vite build && npm run build:backend && tsc -p electron/tsconfig.json && node -e \"require('fs').writeFileSync('dist-electron/package.json',JSON.stringify({type:'commonjs'}))\" && electron-builder",
+    "build:electron": "tsc -p electron/tsconfig.json && node scripts/copy-electron-assets.cjs",
+    "build": "tsc -b && vite build && npm run build:backend && npm run build:electron && electron-builder",
     "lint": "eslint .",
     "preview": "vite preview"
   },
@@ -38,7 +39,9 @@
       "target": [
         {
           "target": "nsis",
-          "arch": ["x64"]
+          "arch": [
+            "x64"
+          ]
         }
       ]
     },
@@ -74,7 +77,7 @@
     "lucide-react": "^0.562.0",
     "react": "^19.2.0",
     "react-chartjs-2": "^5.3.1",
-    "react-day-picker": "^8.10.1",
+    "react-day-picker": "^10.0.1",
     "react-dom": "^19.2.0",
     "react-grid-layout": "^2.1.1",
     "react-is": "^19.2.3",

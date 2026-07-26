@@ -600,14 +600,17 @@ class OuraAutomator:
         save_dir: str,
         *,
         skip_ready_download: bool = False,
+        wait_for_ready: bool = True,
     ) -> Union[str, Dict[str, Any], None]:
         """
-        Orchestrates the entire data export flow:
+        Orchestrates the data export flow:
         1. Navigate to export page.
         2. Request a new export (if not already processing).
-        3. Wait for Oura to generate the export (polling).
-        4. Download the file.
+        3. Optionally wait for Oura to generate the export (polling).
+        4. Download the file when waiting is enabled.
 
+        When ``wait_for_ready`` is False, request (or detect in-progress generation)
+        and return immediately so the app can resume checks across restarts.
         When ``skip_ready_download`` is True, do not download an export that is
         already on the page — used after a stale ingest so we wait for a newly
         generated file instead of re-downloading the same ZIP.
@@ -618,6 +621,9 @@ class OuraAutomator:
 
         if not self.page:
             self.page = await self.context.new_page()
+
+        requested = False
+        already_processing = False
 
         try:
             # 1. Navigate
@@ -649,6 +655,7 @@ class OuraAutomator:
                 if await self._is_export_download_ready() and not await self._is_export_processing():
                     if await self._click_request_export_button():
                         logger.info("Requested a new export (replacing stale ready file).")
+                        requested = True
                     else:
                         return {
                             "status": "error",
@@ -659,16 +666,31 @@ class OuraAutomator:
                             ),
                         }
                 elif await self._is_export_processing():
-                    logger.info("Oura is already generating an export — waiting for it to finish.")
+                    logger.info("Oura is already generating an export — will keep checking later.")
+                    already_processing = True
                 elif await self._click_request_export_button():
-                    logger.info("Export requested. Waiting for processing...")
+                    logger.info("Export requested.")
+                    requested = True
                 else:
-                    logger.info("Could not click request; polling in case export is already running.")
+                    logger.info("Could not click request; Oura may already be generating an export.")
+                    already_processing = True
             else:
                 if await self._click_request_export_button():
-                    logger.info("Export requested. Waiting for processing...")
+                    logger.info("Export requested.")
+                    requested = True
                 else:
                     logger.info("Export might already be requested or button not found.")
+                    already_processing = True
+
+            if not wait_for_ready:
+                if requested:
+                    return {"status": "export_requested"}
+                if already_processing:
+                    return {"status": "export_processing"}
+                return {
+                    "status": "error",
+                    "message": "Could not confirm an export request on Oura.",
+                }
 
             is_ready = await self._wait_for_processing(
                 require_processing_first=skip_ready_download,

@@ -3,7 +3,7 @@ import ipaddress
 import logging
 import os
 import secrets
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Query
@@ -392,7 +392,7 @@ def _build_sync_response(db: Session, window_days: int) -> MobileSyncResponse:
     latest_day = _latest_day(db)
     if latest_day is None:
         return MobileSyncResponse(
-            generated_at=datetime.utcnow(),
+            generated_at=datetime.now(timezone.utc),
             latest_day=None,
             window_days=window_days,
             available_start_day=None,
@@ -563,7 +563,7 @@ def _build_sync_response(db: Session, window_days: int) -> MobileSyncResponse:
     sync_freshness = _build_mobile_sync_freshness(db)
 
     return MobileSyncResponse(
-        generated_at=datetime.utcnow(),
+        generated_at=datetime.now(timezone.utc),
         latest_day=latest_day,
         window_days=window_days,
         available_start_day=available_start_day,
@@ -688,7 +688,7 @@ def mobile_ping(
     settings = _mobile_settings()
     return MobileServerStatusResponse(
         status="ok",
-        generated_at=datetime.utcnow(),
+        generated_at=datetime.now(timezone.utc),
         latest_day=_latest_day(db),
         default_window_days=settings["default_window_days"],
         server_version="1",

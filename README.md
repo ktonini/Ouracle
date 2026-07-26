@@ -118,6 +118,10 @@ This repo now includes:
 
 Setup and usage are documented in [`docs/android-mobile-sync.md`](docs/android-mobile-sync.md).
 
+### Automatic local OTP recovery
+
+For a local-only, deterministic Thunderbird/Betterbird OTP flow that resumes Oura login without copy/paste, see [`docs/automatic-local-otp-recovery.md`](docs/automatic-local-otp-recovery.md).
+
 ### Build from Source
 
 **macOS / Linux:**

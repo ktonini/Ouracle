@@ -16,9 +16,12 @@ from backend.src.api.investigations import router as investigations_router
 from backend.src.database import init_db, SessionLocal
 from backend.src.automation import automator
 from backend.src.ingestion import OuraParser
-from backend.src.config import config_manager
+from backend.src.config import WAITING_FOR_EXPORT_STATUS, config_manager
 from backend.src.mobile_server_manager import mobile_server_manager
 from backend.src.paths import get_user_data_dir
+from backend.src.auto_otp import auto_otp_enabled, wait_for_configured_otp
+from backend.src.activity_log import append_activity
+from backend.src.export_wait import mark_waiting_for_export
 
 # ─── Logging ───
 log_dir = get_user_data_dir()
@@ -90,7 +93,7 @@ async def lifespan(app: FastAPI):
 
     # Reset only transient in-progress statuses; keep OTP/waiting states for the UI.
     cfg = config_manager.get_config()
-    preserve_statuses = {"otp_needed", "Waiting"}
+    preserve_statuses = {"otp_needed", "Waiting", WAITING_FOR_EXPORT_STATUS}
     stuck_processing = {
         "Processing",
         "Starting...",
@@ -104,8 +107,23 @@ async def lifespan(app: FastAPI):
     }
     current = cfg.get("status", "Idle")
     if current in stuck_processing:
-        logger.info("Startup: Resetting stuck status %r to Idle.", current)
-        config_manager.update_status("Idle", message="")
+        if cfg.get("last_export_request_at"):
+            logger.info(
+                "Startup: Converting stuck status %r into durable export wait.",
+                current,
+            )
+            from backend.src.export_wait import mark_waiting_for_export
+
+            mark_waiting_for_export(requested_now=False)
+        else:
+            logger.info("Startup: Resetting stuck status %r to Idle.", current)
+            config_manager.update_status("Idle", message="")
+    elif current == WAITING_FOR_EXPORT_STATUS:
+        logger.info("Startup: Resuming durable export wait.")
+        append_activity(
+            "App started — still waiting for Oura export; will keep checking.",
+            category="export",
+        )
     elif current not in ("Idle", "Error") and current not in preserve_statuses:
         logger.info("Startup: Resetting unknown status %r to Idle.", current)
         config_manager.update_status("Idle", message="")
@@ -319,6 +337,14 @@ async def run_download_existing_task():
             # Error dict returned (not a file path)
             error_msg = result.get("message", "Unknown download error")
             logger.error(f"Download failed: {error_msg}")
+            if config_manager.get_config().get("status") == WAITING_FOR_EXPORT_STATUS or (
+                "No downloadable export" in error_msg
+            ):
+                # Keep durable wait instead of flipping to Error when nothing is ready yet.
+                prior = config_manager.get_config().get("last_export_request_at")
+                if prior:
+                    mark_waiting_for_export(requested_now=False)
+                    return
             config_manager.update_status("Error", message=error_msg)
             return
         
@@ -329,7 +355,10 @@ async def run_download_existing_task():
             await process_ingestion(file_path)
         else:
             logger.info("No existing export found.")
-            config_manager.update_status("Error", message="No export available to download. Try requesting a new sync.")
+            if config_manager.get_config().get("last_export_request_at"):
+                mark_waiting_for_export(requested_now=False)
+            else:
+                config_manager.update_status("Error", message="No export available to download. Try requesting a new sync.")
         
         # Cleanup on success (if not waiting for OTP)
         await automator.cleanup()
@@ -353,49 +382,167 @@ async def download_latest_existing(background_tasks: BackgroundTasks):
 
 # --- Background Logic ---
 
+async def _resolve_otp_or_pause(otp_result: dict) -> bool:
+    """Use a fresh local Thunderbird OTP when opted in, otherwise leave UI prompt active.
+
+    Returning ``True`` means the browser session is authenticated and the
+    caller may continue its current sync operation.  This never uploads or
+    modifies mail; it only reads a newly received matching message.
+    """
+    from backend.src.otp_state import clear_otp_request, mark_otp_requested, otp_prompt_message
+
+    code_sent = bool(otp_result.get("code_sent"))
+    if code_sent:
+        mark_otp_requested()
+
+    cfg = config_manager.get_config()
+    if auto_otp_enabled(cfg):
+        # An already-visible OTP form does not guarantee that its code is new.
+        # Request one fresh code before looking in the mailbox cache.
+        if not code_sent:
+            resend_result = await automator.resend_otp()
+            if resend_result.get("status") == "otp_required" and resend_result.get("code_sent"):
+                mark_otp_requested()
+                cfg = config_manager.get_config()
+            else:
+                logger.warning("Automatic OTP resend did not reach Oura's OTP screen: %s", resend_result)
+
+        config_manager.update_status(
+            "otp_needed",
+            message="Waiting for a fresh verification code in Thunderbird/Betterbird…",
+        )
+        found = await wait_for_configured_otp(config_manager.get_config())
+        if found is not None:
+            # Never log the OTP itself.
+            logger.info("Found fresh Oura OTP in local mail cache: %s", found.source_path)
+            append_activity("Found verification code in local mail — submitting…", category="auth")
+            config_manager.update_status("Submitting OTP…", message="Submitting verification code…")
+            submitted = await automator.submit_otp(found.code)
+            if submitted.get("status") == "success":
+                clear_otp_request()
+                config_manager.update_config(logged_in=True)
+                append_activity("Signed in to Oura successfully.", level="success", category="auth")
+                return True
+            logger.warning("Automatic OTP submission failed: %s", submitted.get("message"))
+            config_manager.update_status("otp_needed", message=submitted.get("message", "OTP submission failed."))
+            return False
+
+        cfg = config_manager.get_config()
+        config_manager.update_status(
+            "otp_needed",
+            message=(
+                "No matching fresh verification email appeared in the local Thunderbird/Betterbird cache. "
+                + otp_prompt_message(cfg, "Enter the verification code manually.")
+            ),
+        )
+        return False
+
+    cfg = config_manager.get_config()
+    config_manager.update_status(
+        "otp_needed",
+        message=otp_prompt_message(cfg, "Check your email for a verification code."),
+    )
+    return False
+
+
+async def run_check_export_ready_task(force: bool = False) -> None:
+    """Download-existing only — used while Waiting for export so we never re-request."""
+    cfg = config_manager.get_config()
+    if not force and not cfg.get("is_active", True):
+        return
+
+    logger.info("Checking whether a requested Oura export is ready…")
+    waiting_for_otp = False
+    try:
+        if automator._is_initialized:
+            try:
+                await automator.cleanup()
+            except Exception as e:
+                logger.warning("Cleanup before export-ready check failed: %s", e)
+
+        await automator.initialize(headless=cfg.get("headless", True))
+        automator.email = cfg.get("email", "")
+
+        from backend.src.paths import get_user_data_dir
+
+        save_dir = str(get_user_data_dir())
+        config_manager.update_status(
+            WAITING_FOR_EXPORT_STATUS,
+            message="Checking Oura for a ready export…",
+            logged_in=True,
+        )
+        result = await automator.download_existing_export(save_dir=save_dir)
+
+        if isinstance(result, str) and result:
+            append_activity("Export ready — downloading…", level="success", category="export")
+            config_manager.update_status("Downloading...", message="Downloading ready export…")
+            await process_ingestion(result)
+            await automator.cleanup()
+            return
+
+        if isinstance(result, dict) and result.get("status") == "otp_required":
+            waiting_for_otp = not await _resolve_otp_or_pause(result)
+            if waiting_for_otp:
+                return
+            return await run_check_export_ready_task(force=True)
+
+        mark_waiting_for_export(requested_now=False)
+        await automator.cleanup()
+    except Exception as e:
+        logger.error("Export-ready check failed: %s", e)
+        config_manager.update_status(
+            WAITING_FOR_EXPORT_STATUS,
+            message=(
+                f"Could not check export status ({e}). "
+                "Will retry automatically; Sync now also retries the download check."
+            ),
+            logged_in=True,
+        )
+        if not waiting_for_otp:
+            try:
+                await automator.cleanup()
+            except Exception:
+                pass
+
+
 async def run_ingestion_task(force=False):
     """
     The core logic for checking, requesting, and downloading data.
+
+    If we are already Waiting for export, only poll for a ready download
+    (never request another export).
     """
     cfg = config_manager.get_config()
     if not force and not cfg.get("is_active", True):
         return
 
+    if cfg.get("status") == WAITING_FOR_EXPORT_STATUS:
+        return await run_check_export_ready_task(force=force)
+
     logger.info("Background worker: Starting ingestion task...")
     config_manager.update_status("Starting...")
     waiting_for_otp = False
-    
+
     try:
-        # 1. Always reinitialize for a fresh browser session
         if automator._is_initialized:
             try:
                 await automator.cleanup()
             except Exception as e:
                 logger.warning(f"Cleanup before ingestion task had errors: {e}")
-        
+
         config_manager.update_status("Initializing...")
         headless_mode = cfg.get("headless", True)
         await automator.initialize(headless=headless_mode)
-        
-        # Configure credentials
+
         automator.email = cfg.get("email", "")
-        
-        # Check login first
+
         login_res = await automator.login()
         if login_res and login_res.get("status") == "otp_required":
-             waiting_for_otp = True
-             logger.info("Background worker: OTP Required.")
-             from backend.src.otp_state import mark_otp_requested, otp_prompt_message
+            waiting_for_otp = not await _resolve_otp_or_pause(login_res)
+            if waiting_for_otp:
+                logger.info("Background worker paused: OTP required.")
+                return
 
-             if login_res.get("code_sent"):
-                 mark_otp_requested()
-             cfg = config_manager.get_config()
-             config_manager.update_status(
-                 "otp_needed",
-                 message=otp_prompt_message(cfg, "Check your email for a verification code."),
-             )
-             return
-        
         from backend.src.paths import get_user_data_dir
 
         save_dir = str(get_user_data_dir())
@@ -406,61 +553,53 @@ async def run_ingestion_task(force=False):
         if isinstance(result, str) and result:
             file_path = result
             logger.info("Background worker: Downloaded existing export to %s", file_path)
+            append_activity("Downloaded an existing ready export.", level="success", category="export")
             config_manager.update_status("Downloading...")
             await process_ingestion(file_path)
             await automator.cleanup()
             return
 
         if isinstance(result, dict) and result.get("status") == "otp_required":
-            waiting_for_otp = True
-            from backend.src.otp_state import mark_otp_requested, otp_prompt_message
-
-            if result.get("code_sent"):
-                mark_otp_requested()
-            cfg = config_manager.get_config()
-            config_manager.update_status(
-                "otp_needed",
-                message=otp_prompt_message(cfg, "Check your email for a verification code."),
-            )
-            return
+            waiting_for_otp = not await _resolve_otp_or_pause(result)
+            if waiting_for_otp:
+                return
+            return await run_ingestion_task(force=True)
 
         config_manager.update_status("Running Automation...", message="Requesting new export...")
-        config_manager.update_config(
-            last_export_request_at=datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        result = await automator.request_new_export_and_download(
+            save_dir=save_dir,
+            wait_for_ready=False,
         )
-        result = await automator.request_new_export_and_download(save_dir=save_dir)
-        
+
         if isinstance(result, dict) and result.get("status") == "otp_required":
-             waiting_for_otp = True
-             from backend.src.otp_state import mark_otp_requested, otp_prompt_message
+            waiting_for_otp = not await _resolve_otp_or_pause(result)
+            if waiting_for_otp:
+                logger.info("Background worker paused: OTP required.")
+                return
+            return await run_ingestion_task(force=True)
 
-             if result.get("code_sent"):
-                 mark_otp_requested()
-             cfg = config_manager.get_config()
-             config_manager.update_status(
-                 "otp_needed",
-                 message=otp_prompt_message(cfg, "Check your email for a verification code."),
-             )
-             logger.info("Background worker: paused waiting for OTP.")
-             return
+        if isinstance(result, str) and result:
+            append_activity("Downloaded an existing ready export.", level="success", category="export")
+            config_manager.update_status("Downloading...")
+            await process_ingestion(result)
+            await automator.cleanup()
+            return
 
-        file_path = result
-        
+        if isinstance(result, dict) and result.get("status") in ("export_requested", "export_processing"):
+            mark_waiting_for_export(requested_now=True)
+            await automator.cleanup()
+            return
+
         if isinstance(result, dict) and result.get("status") == "error":
             logger.error("Background worker: %s", result.get("message"))
             config_manager.update_status("Error", message=result.get("message", "Sync failed"))
-        elif file_path:
-            logger.info(f"Background worker status: Downloaded to {file_path}")
-            config_manager.update_status("Downloading...")
-            await process_ingestion(file_path)
         else:
             logger.info("Background worker: No file downloaded (Timeout or Error).")
             config_manager.update_status(
                 "Error",
                 message="No file downloaded. If Oura emailed you, try Sync now again in a minute.",
             )
-        
-        # Cleanup on success
+
         await automator.cleanup()
 
     except Exception as e:
@@ -472,26 +611,29 @@ async def run_ingestion_task(force=False):
             except Exception:
                 pass
 
+
 async def process_ingestion(zip_path):
     from backend.src.ingestion.runner import ingest_zip_async
 
     logger.info(f"Background worker: Downloaded to {zip_path}")
     config_manager.update_status("Ingesting...", message="Ingesting downloaded export…")
+    append_activity("Ingesting downloaded export…", category="ingest")
     try:
         await ingest_zip_async(
             zip_path,
             success_message="Sync completed successfully.",
         )
         logger.info("Background worker: Ingestion successful.")
+        append_activity("Ingest completed successfully.", level="success", category="ingest")
     except Exception as e:
         logger.error(f"Background worker: Ingestion failed: {e}")
+        append_activity(f"Ingest failed: {e}", level="error", category="ingest")
 
 
 async def background_worker():
     logger.info("Background worker started.")
     while True:
         try:
-            # Check every minute if it's time to run
             now = datetime.now()
             cfg = config_manager.get_config()
             if os.environ.get("CRACKED_OURA_DISABLE_MOBILE_AUTOSTART") != "1":
@@ -499,37 +641,35 @@ async def background_worker():
                     mobile_server_manager.reconcile()
                 except Exception:
                     logger.exception("Mobile sync server reconcile failed in background worker")
-            
-            # Calculate next run time for display
+
+            from backend.src.scheduling import compute_next_daily_run
+
             schedule_time_str = cfg.get("schedule_time", "11:00")
             try:
                 sh, sm = map(int, schedule_time_str.split(":"))
-                run_today = now.replace(hour=sh, minute=sm, second=0, microsecond=0)
-                if now > run_today:
-                    next_run = run_today + timedelta(days=1)
-                else:
-                    next_run = run_today
-                
-                config_manager.update_status(cfg.get("status", "Idle"), next_run=next_run.strftime("%Y-%m-%d %H:%M:%S"))
+                next_run = compute_next_daily_run(now, schedule_time_str)
+                config_manager.update_status(
+                    cfg.get("status", "Idle"),
+                    next_run=next_run.strftime("%Y-%m-%d %H:%M:%S"),
+                )
 
                 if now.hour == sh and now.minute == sm:
-                     await run_ingestion_task()
-                
-                # If in "Waiting" state, poll every 5 minutes            
-                elif "Waiting" in cfg.get("status", ""):
+                    await run_ingestion_task()
+
+                elif cfg.get("status") == WAITING_FOR_EXPORT_STATUS:
                     if now.minute % 5 == 0:
-                        logger.info("Background worker: Polling for export status...")
-                        await run_ingestion_task()
-                     
+                        logger.info("Background worker: Checking for ready export…")
+                        await run_check_export_ready_task()
+
             except Exception as e:
                 logger.error(f"Scheduler error: {e}")
 
-            # Sleep 60 seconds
             await asyncio.sleep(60)
-                    
+
         except Exception as e:
             logger.error(f"Background worker loop error: {e}")
             await asyncio.sleep(60)
+
 
 if __name__ == "__main__":
     import uvicorn

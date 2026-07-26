@@ -12,7 +12,6 @@ import {
   Sliders,
   ChevronLeft,
   ChevronRight,
-  BatteryMedium,
   RefreshCw,
   MoonStar,
   Plus,
@@ -31,8 +30,6 @@ import {
 } from '@/components/ui/dropdown-menu';
 import type { AppView } from '@/types/app-view';
 import type { Dashboard } from '@/types';
-import { format } from 'date-fns';
-
 interface NavItem {
   id: AppView;
   label: string;
@@ -63,8 +60,6 @@ interface HealthSidebarProps {
   syncStatus?: { status: string; lastRun: string | null } | null;
   onSync?: () => void;
   isSyncing?: boolean;
-  battery?: number | null;
-  batteryTimestamp?: string | null;
 
   // Dashboard management
   dashboards?: Dashboard[];
@@ -85,8 +80,6 @@ export function HealthSidebar({
   syncStatus,
   onSync,
   isSyncing = false,
-  battery,
-  batteryTimestamp,
   dashboards = [],
   activeDashboardId,
   onDashboardSelect,
@@ -111,9 +104,6 @@ export function HealthSidebar({
   };
 
   const showDashboards = dashboards.length > 0 && onDashboardSelect;
-  const batteryTime = batteryTimestamp
-    ? format(new Date(batteryTimestamp.replace(' ', 'T')), 'HH:mm')
-    : null;
 
   return (
     <div className={cn(
@@ -154,14 +144,10 @@ export function HealthSidebar({
               Export Data
             </span>
           </div>
-          <div className="flex items-center gap-1.5 text-white/30 text-[11px]">
-            <BatteryMedium className="w-3.5 h-3.5 text-score-green" />
-            <span>{battery != null ? `${Math.round(battery)}%` : '--%'}</span>
-          </div>
         </div>
         <div className="flex items-center justify-between mt-1.5">
           <span className="text-white/25 text-[10px]">
-            {batteryTime ? `Battery sample: ${batteryTime}` : syncStatus?.lastRun ? `Last sync: ${syncStatus.lastRun}` : 'No sync yet'}
+            {syncStatus?.lastRun ? `Last sync: ${syncStatus.lastRun}` : 'No sync yet'}
           </span>
           <button
             onClick={onSync}

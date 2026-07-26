@@ -65,6 +65,13 @@ def init_db():
     """
     try:
         Base.metadata.create_all(bind=engine)
+        from backend.src.ingestion.key_migration import normalize_keys_if_needed
+
+        db = SessionLocal()
+        try:
+            normalize_keys_if_needed(db)
+        finally:
+            db.close()
         logger.info(f"Database initialized at {DB_PATH}")
     except Exception as e:
         logger.error(f"Failed to initialize database: {e}")

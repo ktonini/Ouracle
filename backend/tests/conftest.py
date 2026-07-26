@@ -31,6 +31,9 @@ def db_session() -> Iterator[Session]:
     Base.metadata.create_all(engine)
     SessionLocal = sessionmaker(bind=engine, autoflush=False, autocommit=False)
     session = SessionLocal()
+    from backend.src.ingestion.key_migration import normalize_keys_if_needed
+
+    normalize_keys_if_needed(session)
     try:
         yield session
     finally:

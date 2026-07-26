@@ -1,13 +1,16 @@
 import pandas as pd
 import json
-import uuid
 import os
 import logging
 from datetime import datetime, date
-from typing import List, Any, Type, Optional
+from typing import List, Any, Type, Optional, TYPE_CHECKING
 from sqlalchemy.orm import Session
 from sqlalchemy.dialects.sqlite import insert
 from backend.src.models import Base
+from backend.src.ingestion.state import content_columns_for, content_differs, synthetic_id, naive_utc
+
+if TYPE_CHECKING:
+    from backend.src.ingestion.state import IngestContext
 
 # Configure Logger
 logging.basicConfig(level=logging.INFO)
@@ -19,8 +22,35 @@ class IngestionBase:
     Base class for Oura Data Ingestion.
     Provides robust CSV reading (handling bad quotes/mismatched columns) and batch upserting for SQLite.
     """
-    def __init__(self, session: Session):
+    def __init__(self, session: Session, ctx: Optional["IngestContext"] = None):
         self.session = session
+        self.ctx = ctx
+
+    def _synthetic_id(self, entity: str, fields: list) -> str:
+        return synthetic_id(entity, fields)
+
+    def _oura_or_synthetic(
+        self,
+        row,
+        entity: str,
+        synthetic_fields: list,
+        oura_col: str = "id",
+    ) -> str:
+        oura_id = row.get(oura_col) if hasattr(row, "get") else getattr(row, oura_col, None)
+        if oura_id is None or pd.isna(oura_id) or str(oura_id).strip().lower() in ("", "nan"):
+            return self._synthetic_id(entity, synthetic_fields)
+        return str(oura_id)
+
+    def _day_pk(self, table: str, day_val: date) -> str:
+        return self._synthetic_id(table, [day_val])
+
+    def _record_counts(self, inserted: int = 0, updated: int = 0, unchanged: int = 0, skipped: int = 0) -> None:
+        if self.ctx is None:
+            return
+        self.ctx.counts.inserted += inserted
+        self.ctx.counts.updated += updated
+        self.ctx.counts.unchanged += unchanged
+        self.ctx.counts.skipped += skipped
 
     def _read_csv_robust(self, file_path: str) -> Optional[pd.DataFrame]:
         """Reads CSV handling Oura's sometimes malformed quoting and mismatched column counts."""
@@ -73,9 +103,9 @@ class IngestionBase:
             
             parts = line.split(';')
             
-            # Auto-generate ID if missing but header expects it
+            # Missing id column — processors derive deterministic keys
             if len(parts) == len(header) - 1 and header[0] == 'id':
-                parts.insert(0, str(uuid.uuid4()))
+                parts.insert(0, "")
             
             # Handle trailing empty columns
             if len(parts) < len(header):
@@ -162,6 +192,46 @@ class IngestionBase:
             batch = data[i : i + batch_size]
             self._upsert(model, batch, index_elements)
 
+    def _upsert_content_aware(
+        self,
+        model: Type[Base],
+        records: List[Any],
+        index_elements: List[str],
+    ) -> None:
+        if not records:
+            return
+        ctx = self.ctx
+        if ctx is None or not ctx.effective_incremental:
+            self._upsert(model, records, index_elements)
+            self._record_counts(inserted=len(records))
+            return
+
+        key_col = index_elements[0]
+        keys = [getattr(r, key_col) for r in records]
+        existing_rows = (
+            self.session.query(model)
+            .filter(getattr(model, key_col).in_(keys))
+            .all()
+        )
+        existing = {getattr(r, key_col): r for r in existing_rows}
+        cols = content_columns_for(model)
+        to_write: List[Any] = []
+        ins = upd = unchanged = 0
+        for rec in records:
+            k = getattr(rec, key_col)
+            old = existing.get(k)
+            if old is None:
+                ins += 1
+                to_write.append(rec)
+            elif content_differs(old, rec, cols):
+                upd += 1
+                to_write.append(rec)
+            else:
+                unchanged += 1
+        self._record_counts(inserted=ins, updated=upd, unchanged=unchanged)
+        if to_write:
+            self._upsert(model, to_write, index_elements)
+
     # --- Parsing Helpers ---
 
     def _parse_json_col(self, val):
@@ -181,12 +251,19 @@ class IngestionBase:
     def _parse_datetime(self, val):
         if pd.isna(val) or val == "":
             return None
+        if isinstance(val, datetime):
+            return naive_utc(val)
+        if isinstance(val, pd.Timestamp):
+            return naive_utc(val.to_pydatetime())
         if isinstance(val, str):
             val = val.replace('"', '')
         try:
-            return pd.to_datetime(val, format='ISO8601').to_pydatetime()
+            return naive_utc(pd.to_datetime(val, format='ISO8601').to_pydatetime())
         except Exception:
-            return None
+            try:
+                return naive_utc(pd.to_datetime(val).to_pydatetime())
+            except Exception:
+                return None
 
     def _parse_date(self, val):
         if pd.isna(val) or val == "":

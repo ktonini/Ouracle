@@ -20,6 +20,7 @@ from ..analysis import (
     compute_anomalies,
     compute_correlation,
 )
+from ..analysis.interesting_correlations import find_interesting_correlations
 from ..database import get_db
 
 
@@ -60,6 +61,19 @@ class CorrelationResponse(BaseModel):
     paired_dates: List[List[str]]
     warning: Optional[str]
     interpretation: str
+
+
+class InterestingCorrelationResponse(BaseModel):
+    x_metric: str
+    y_metric: str
+    x_label: str
+    y_label: str
+    lag_days: int
+    coefficient: float
+    sample_count: int
+    reason: str
+    interpretation: str
+    score: float
 
 
 class AnomalyResponse(BaseModel):
@@ -122,8 +136,35 @@ def get_correlation(
         y_series = build_metric_series(db, y_metric, start, end)
     except KeyError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
-    result = compute_correlation(x_series, y_series, lag_days=lag_days, method=method)
+    from ..analysis.metric_catalog import METRIC_CATALOG
+
+    x_spec = METRIC_CATALOG.get(x_metric)
+    y_spec = METRIC_CATALOG.get(y_metric)
+    result = compute_correlation(
+        x_series,
+        y_series,
+        lag_days=lag_days,
+        method=method,
+        x_label=x_spec.label if x_spec else x_metric,
+        y_label=y_spec.label if y_spec else y_metric,
+    )
     return CorrelationResponse(**result.to_dict())  # type: ignore[arg-type]
+
+
+@router.get("/interesting-correlations", response_model=List[InterestingCorrelationResponse])
+def get_interesting_correlations(
+    start_date: Optional[date] = None,
+    end_date: Optional[date] = None,
+    limit: int = Query(6, ge=1, le=20),
+    min_abs: float = Query(0.25, ge=0.0, le=1.0),
+    min_samples: int = Query(21, ge=2, le=365),
+    db: Session = Depends(get_db),
+) -> List[InterestingCorrelationResponse]:
+    start, end = _parse_range(start_date, end_date)
+    results = find_interesting_correlations(
+        db, start, end, limit=limit, min_abs=min_abs, min_samples=min_samples
+    )
+    return [InterestingCorrelationResponse(**r.to_dict()) for r in results]  # type: ignore[arg-type]
 
 
 @router.get("/anomalies/{day}", response_model=List[AnomalyResponse])

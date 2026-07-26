@@ -17,13 +17,31 @@ function isoDay(d: Date): string {
  * Source paths come straight from `ContributorSummary.source_path`
  * (e.g. `sleep.contributors.deep_sleep`) and are passed to `/api/query`.
  */
-export function useContributorHistory(day: string | null, paths: string[]): HistoryMap {
+export function buildContributorHistoryAxis(day: string): string[] {
+  const endDate = new Date(day);
+  const startDate = new Date(endDate);
+  startDate.setDate(startDate.getDate() - (WINDOW_DAYS - 1));
+  const axis: string[] = [];
+  for (let i = 0; i < WINDOW_DAYS; i++) {
+    const d = new Date(startDate);
+    d.setDate(d.getDate() + i);
+    axis.push(isoDay(d));
+  }
+  return axis;
+}
+
+export function useContributorHistory(
+  day: string | null,
+  paths: string[],
+): { history: HistoryMap; axis: string[] } {
   const [history, setHistory] = useState<HistoryMap>(new Map());
+  const [axis, setAxis] = useState<string[]>([]);
   const key = paths.join('|');
 
   useEffect(() => {
     if (!day || paths.length === 0) {
       setHistory(new Map());
+      setAxis([]);
       return;
     }
     let cancelled = false;
@@ -34,12 +52,8 @@ export function useContributorHistory(day: string | null, paths: string[]): Hist
     const start = isoDay(startDate);
     const end = isoDay(endDate);
 
-    const axis: string[] = [];
-    for (let i = 0; i < WINDOW_DAYS; i++) {
-      const d = new Date(startDate);
-      d.setDate(d.getDate() + i);
-      axis.push(isoDay(d));
-    }
+    const dateAxis = buildContributorHistoryAxis(day);
+    setAxis(dateAxis);
 
     Promise.all(
       paths.map(async (path) => {
@@ -56,10 +70,10 @@ export function useContributorHistory(day: string | null, paths: string[]): Hist
             const v = row.value ?? row.score;
             if (d != null && typeof v === 'number') byDate.set(d, v);
           }
-          const series = axis.map((d) => (byDate.has(d) ? (byDate.get(d) as number) : null));
+          const series = dateAxis.map((d) => (byDate.has(d) ? (byDate.get(d) as number) : null));
           return [path, series] as const;
         } catch {
-          return [path, axis.map(() => null)] as const;
+          return [path, dateAxis.map(() => null)] as const;
         }
       }),
     )
@@ -77,5 +91,5 @@ export function useContributorHistory(day: string | null, paths: string[]): Hist
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [day, key]);
 
-  return history;
+  return { history, axis };
 }

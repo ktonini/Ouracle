@@ -13,12 +13,16 @@ DASHBOARD_FILE = "oura_dashboard.json"
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("ConfigManager")
 
+# Durable status while Oura generates an export (survives app restart).
+WAITING_FOR_EXPORT_STATUS = "Waiting for export"
+
 DEFAULT_CONFIG = {
     "email": "",
     "schedule_time": "11:00",
     "last_run": None,
     "next_run": None,
     "status": "Idle",
+    "message": None,
     "logged_in": False,
     "is_active": True,
     "headless": True,
@@ -33,6 +37,19 @@ DEFAULT_CONFIG = {
     "last_export_request_at": None,
     "otp_requested_at": None,
     "status_started_at": None,
+    # Optional local-only OTP retrieval. It reads a Thunderbird/Betterbird
+    # mbox cache and never sends, changes, or uploads email.
+    "auto_otp_enabled": False,
+    "auto_otp_sender": "support@ouraring.com",
+    "auto_otp_subject": "One time password",
+    "auto_otp_code_pattern": r"(?:one\s*time\s*password|verification\s*code)\D{0,80}\b(\d{6})\b",
+    "auto_otp_profile_root": "",
+    "auto_otp_poll_seconds": 3,
+    "auto_otp_timeout_seconds": 120,
+    "auto_otp_live_mailbox_enabled": True,
+    "auto_otp_mailbox_api_url": "http://127.0.0.1:8766",
+    "incremental_ingest_enabled": True,
+    "incremental_reprocess_window_days": 3,
 }
 
 _PROCESSING_STATUSES = frozenset({
@@ -61,7 +78,7 @@ class ConfigManager:
         self.data_dir = get_user_data_dir()
         self.config_path = os.path.join(self.data_dir, CONFIG_FILE)
         self.dashboard_path = os.path.join(self.data_dir, DASHBOARD_FILE)
-        self._lock = threading.Lock()
+        self._lock = threading.RLock()
         self._ensure_config()
 
     def _ensure_config(self):
@@ -151,6 +168,10 @@ class ConfigManager:
         Helper to update status specific fields in the main config.
         Accepts flexible kwargs like 'message', 'last_run', 'next_run'.
         """
+        previous = self.get_config()
+        previous_status = previous.get("status")
+        previous_message = previous.get("message")
+
         if status in ("otp_needed", "Waiting"):
             kwargs.setdefault("logged_in", False)
         if status in _PROCESSING_STATUSES:
@@ -158,8 +179,58 @@ class ConfigManager:
                 "status_started_at",
                 datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
             )
-        elif status == "Idle":
+        elif status in ("Idle", WAITING_FOR_EXPORT_STATUS):
             kwargs.setdefault("status_started_at", None)
         self.update_config(status=status, **kwargs)
+
+        # Only log when status or message actually changed for the user.
+        new_message = kwargs["message"] if "message" in kwargs else previous_message
+        if previous_status == status and new_message == previous_message:
+            return
+        self._maybe_log_status_activity(
+            previous_status=previous_status,
+            status=status,
+            message=new_message if isinstance(new_message, str) else None,
+        )
+
+    @staticmethod
+    def _maybe_log_status_activity(
+        *,
+        previous_status: Any,
+        status: str,
+        message: str | None,
+    ) -> None:
+        """Record user-facing status transitions without leaking secrets."""
+        try:
+            from backend.src.activity_log import append_activity
+
+            level = "info"
+            category = "sync"
+            if status == "Error" or (isinstance(status, str) and status.startswith("Login Error")):
+                level = "error"
+                category = "error"
+            elif status == "otp_needed":
+                level = "warning"
+                category = "auth"
+            elif status == WAITING_FOR_EXPORT_STATUS:
+                level = "info"
+                category = "export"
+            elif status == "Idle" and message and "complete" in message.lower():
+                level = "success"
+
+            if isinstance(message, str) and message.strip():
+                text = message.strip()
+            elif status != previous_status:
+                text = status
+            else:
+                return
+
+            # Never echo short OTP-like snippets.
+            lowered = text.lower()
+            if "otp" in lowered and sum(ch.isdigit() for ch in text) >= 4 and len(text) <= 24:
+                text = status
+            append_activity(text, level=level, category=category)
+        except Exception:
+            logger.exception("Failed to append activity log entry")
 
 config_manager = ConfigManager()

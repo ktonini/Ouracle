@@ -1,5 +1,6 @@
 import { Button } from '@/components/ui/button';
-import { Calendar as CalendarIcon, ChevronLeft, ChevronRight } from 'lucide-react';
+import { BatteryMedium, Calendar as CalendarIcon, ChevronLeft, ChevronRight } from 'lucide-react';
+import { batteryLevelTone } from '@/lib/day-summary';
 import { Calendar } from '@/components/ui/calendar';
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
 import { format } from 'date-fns';
@@ -8,16 +9,39 @@ import { ModeToggle } from '@/components/mode-toggle';
 import type { SyncFreshness } from '@/lib/api';
 import { syncIndicatorTone, syncStatusHeadline } from '@/lib/sync-display';
 
+export interface RingStatusProps {
+  battery: number | null;
+  batteryTimestamp: string | null;
+  onOpenBattery: () => void;
+}
+
 interface TopDateBarProps {
   selectedDate: Date;
   onDateChange: (date: Date) => void;
   syncStatus?: { status: string; lastRun: string | null; freshness?: SyncFreshness | null };
   connectionStatus?: 'connected' | 'disconnected' | 'checking';
+  ringStatus?: RingStatusProps;
   rightActions?: React.ReactNode;
   className?: string;
 }
 
-export function TopDateBar({ selectedDate, onDateChange, syncStatus, connectionStatus, rightActions, className }: TopDateBarProps) {
+function ringStatusClasses(level: number | null): { icon: string; text: string } {
+  const tone = batteryLevelTone(level);
+  if (tone === 'green') return { icon: 'text-score-green', text: 'text-score-green' };
+  if (tone === 'yellow') return { icon: 'text-score-yellow', text: 'text-score-yellow' };
+  if (tone === 'coral') return { icon: 'text-living-coral', text: 'text-living-coral' };
+  return { icon: 'text-white/35', text: 'text-white/50' };
+}
+
+export function TopDateBar({
+  selectedDate,
+  onDateChange,
+  syncStatus,
+  connectionStatus,
+  ringStatus,
+  rightActions,
+  className,
+}: TopDateBarProps) {
   return (
     <header className={cn(
       'glass-nav h-14 px-6 flex items-center justify-between select-none flex-shrink-0',
@@ -115,6 +139,28 @@ export function TopDateBar({ selectedDate, onDateChange, syncStatus, connectionS
             )}
           </div>
         )}
+        {ringStatus && (() => {
+          const colors = ringStatusClasses(ringStatus.battery);
+          const sampleTime = ringStatus.batteryTimestamp
+            ? format(new Date(ringStatus.batteryTimestamp.replace(' ', 'T')), 'HH:mm')
+            : null;
+          return (
+            <button
+              type="button"
+              onClick={ringStatus.onOpenBattery}
+              className="flex items-center gap-2 rounded-lg border border-white/[0.08] bg-white/[0.04] px-2.5 py-1.5 text-[11px] transition-colors hover:bg-white/[0.08] hover:text-white"
+              title="Ring battery history"
+            >
+              <BatteryMedium className={cn('h-3.5 w-3.5', colors.icon)} />
+              <span className={cn('font-semibold tabular-nums', colors.text)}>
+                {ringStatus.battery != null ? `${Math.round(ringStatus.battery)}%` : '--%'}
+              </span>
+              {sampleTime && (
+                <span className="text-white/30">{sampleTime}</span>
+              )}
+            </button>
+          );
+        })()}
         {rightActions}
         <ModeToggle />
       </div>

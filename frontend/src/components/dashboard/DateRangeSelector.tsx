@@ -160,7 +160,7 @@ export function DateRangeSelector({ widget, onUpdate, selectedDate = new Date(),
 
         // Case 3: Absolute dates
         let startDate = from.date;
-        let endDate = to.date;
+        const endDate = to.date;
 
         // Resolve relative start date if end date is known
         if (from.isRelative && from.value && from.unit && endDate) {

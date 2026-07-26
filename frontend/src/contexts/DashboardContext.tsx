@@ -16,6 +16,14 @@ const EMPTY_DASHBOARD: Dashboard = {
 
 import type { AppView } from '@/types/app-view';
 
+export interface TrendFocus {
+    metricId: string;
+    label?: string;
+    color?: string;
+    rangeDays?: number;
+    endDate?: string;
+}
+
 type PanelType = 'none' | 'chat' | 'editor' | 'settings';
 
 interface DashboardContextType {
@@ -40,6 +48,9 @@ interface DashboardContextType {
     setActivePanel: (panel: PanelType) => void;
     activeView: AppView;
     setActiveView: (view: AppView) => void;
+
+    trendFocus: TrendFocus | null;
+    setTrendFocus: (focus: TrendFocus | null) => void;
 
     // Widget Editing
     editingWidget: WidgetInstance | undefined;
@@ -75,6 +86,7 @@ export function DashboardProvider({ children }: { children: ReactNode }) {
     const [activePanel, setActivePanel] = useState<PanelType>('none');
     const [activeView, setActiveView] = useState<AppView>('today');
     const [selectedDate, setSelectedDate] = useState<Date>(new Date());
+    const [trendFocus, setTrendFocus] = useState<TrendFocus | null>(null);
 
     // Dashboards
     const [dashboards, setDashboards] = useState<Dashboard[]>([EMPTY_DASHBOARD]);
@@ -265,6 +277,8 @@ export function DashboardProvider({ children }: { children: ReactNode }) {
             setActivePanel,
             activeView,
             setActiveView,
+            trendFocus,
+            setTrendFocus,
             editingWidget,
             startEditingWidget,
             saveEditingWidget,

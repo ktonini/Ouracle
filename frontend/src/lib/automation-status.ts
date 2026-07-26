@@ -24,6 +24,9 @@ export function automationStatusLabel(
     if (needsOuraReauth(data.status, data.message)) {
         return 'Oura sign-in required';
     }
+    if (data.status === 'Waiting for export') {
+        return 'Waiting for Oura export';
+    }
     if (data.status === 'Processing' || data.status === 'Ingesting') {
         return 'Syncing…';
     }

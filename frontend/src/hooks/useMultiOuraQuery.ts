@@ -67,6 +67,8 @@ export function useMultiOuraQuery(paths: string[], startDate?: string, endDate?:
         fetchData();
 
         return () => { cancelled = true; };
+        // `pathsKey` is a content-derived stable dependency; `paths` itself is often a new array.
+        // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [pathsKey, startDate, endDate]);
 
     return { data, loading, error };

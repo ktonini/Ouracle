@@ -1,4 +1,4 @@
-
+import asyncio
 import logging
 import os
 import shutil
@@ -6,7 +6,7 @@ import tempfile
 import json
 import traceback
 from typing import List, Optional, Any
-from datetime import date, datetime
+from datetime import date, datetime, timezone
 
 from fastapi import APIRouter, Depends, HTTPException, Query, UploadFile, File, BackgroundTasks, Request
 from fastapi.responses import StreamingResponse
@@ -15,7 +15,7 @@ from sqlalchemy.orm import Session
 from sqlalchemy import select, func
 
 # Constants and Configuration
-from ..config import config_manager
+from ..config import WAITING_FOR_EXPORT_STATUS, config_manager
 from ..database import get_db, SessionLocal
 from ..ingestion.runner import ingest_zip_async
 from ..sync_recovery import PROCESSING_STATUSES, recover_stuck_sync_if_needed
@@ -30,7 +30,6 @@ from .schemas import (
     SleepSessionResponse, WorkoutResponse, HeartRateResponse, 
     ResilienceResponse, TemperatureResponse, MeditationResponse
 )
-from ..ingestion import OuraParser
 from ..automation import automator
 from ..llm import DataAnalyst
 
@@ -119,13 +118,19 @@ def _coerce_downloaded_zip_path(result: Any) -> str:
 
 async def run_full_sync_task(db_session_factory):
     """
-    Executes the full synchronization process:
-    1. Request export from Oura Cloud (via playwright).
-    2. Wait for export generation.
-    3. Download the export zip.
-    4. Ingest data into the local SQLite database.
+    Executes the synchronization process:
+    1. Download a ready export if present.
+    2. Otherwise request a new export and enter durable Waiting for export.
+    3. When a file is available, ingest into SQLite.
     """
     del db_session_factory  # ingest opens its own DB session off the event loop
+    cfg = config_manager.get_config()
+    if cfg.get("status") == WAITING_FOR_EXPORT_STATUS:
+        from backend.src.api.main import run_check_export_ready_task
+
+        await run_check_export_ready_task(force=True)
+        return
+
     config_manager.update_status("Processing", message="Starting full sync...")
     waiting_for_otp = False
     need_fresh_export = False
@@ -205,15 +210,13 @@ async def run_full_sync_task(db_session_factory):
 
             config_manager.update_status(
                 "Processing",
-                message="Requesting and waiting for export (this may take hours)...",
-            )
-            config_manager.update_config(
-                last_export_request_at=datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                message="Requesting a new Oura export (generation can take days)...",
             )
 
             result = await automator.request_new_export_and_download(
                 temp_dir,
                 skip_ready_download=True,
+                wait_for_ready=False,
             )
 
             # Handle OTP requirement — keep session alive so user can submit code
@@ -231,6 +234,12 @@ async def run_full_sync_task(db_session_factory):
                 logger.warning("Full sync paused: OTP required. Waiting for user to submit code.")
                 return
 
+            if isinstance(result, dict) and result.get("status") in ("export_requested", "export_processing"):
+                from backend.src.export_wait import mark_waiting_for_export
+
+                mark_waiting_for_export(requested_now=True)
+                return
+
             zip_path = result
             
             # Process successfully downloaded file
@@ -244,7 +253,21 @@ async def run_full_sync_task(db_session_factory):
                         "(not necessarily from a new email). Ingesting…"
                     ),
                 )
-                await ingest_zip_async(zip_path)
+                from backend.src.ingestion.runner import ingest_zip_blocking
+                from backend.src.insights.sync_freshness import apply_post_ingest_outcome
+
+                outcome = await asyncio.to_thread(ingest_zip_blocking, zip_path)
+                apply_post_ingest_outcome(
+                    outcome,
+                    success_message="Sync and ingestion complete!",
+                )
+                if outcome.skipped_identical_zip:
+                    config_manager.update_status(
+                        "Idle",
+                        message="Oura has not produced newer data yet. Try again later.",
+                    )
+                if outcome.error:
+                    raise outcome.error
                 logger.info("Full sync: Ingestion complete.")
             elif isinstance(result, dict) and result.get("status") == "error":
                 logger.error("Full sync failed: %s", result.get("message"))
@@ -399,7 +422,7 @@ async def chat(
         db.add(user_msg)
         
         # Update thread's updated_at
-        db_thread.updated_at = datetime.utcnow()
+        db_thread.updated_at = datetime.now(timezone.utc).replace(tzinfo=None)
         
         # If thread title is default "New conversation", rename from first message
         if db_thread.title == "New conversation" or not db_thread.title:
@@ -466,7 +489,7 @@ async def chat(
                         thoughts=all_thoughts
                     )
                     stream_db.add(assistant_msg)
-                    t_thread.updated_at = datetime.utcnow()
+                    t_thread.updated_at = datetime.now(timezone.utc).replace(tzinfo=None)
                     stream_db.commit()
 
                 yield json.dumps({"type": "done", "response": full_answer, "thoughts": all_thoughts}) + "\n"
@@ -538,22 +561,37 @@ async def resend_otp():
 @router.post("/api/automation/request-export")
 async def request_export(background_tasks: BackgroundTasks):
     """
-    Starts the full export -> wait -> download -> ingest process in the background.
+    Starts export sync in the background.
+
+    If already Waiting for export, only checks/downloads — does not request another.
     """
     recover_stuck_sync_if_needed()
     cfg = config_manager.get_config()
     if cfg.get("status") in PROCESSING_STATUSES:
         raise HTTPException(status_code=409, detail="Sync already in progress")
-        
+
+    if cfg.get("status") == WAITING_FOR_EXPORT_STATUS:
+        from backend.src.api.main import run_check_export_ready_task
+
+        background_tasks.add_task(run_check_export_ready_task, True)
+        return {"message": "Checking for a ready export…"}
+
     background_tasks.add_task(run_full_sync_task, SessionLocal)
     return {"message": "Full sync started in background."}
 
 @router.post("/api/automation/check-status")
 async def check_status():
     """Returns the current automation status from the persistent config."""
-    from backend.src.otp_state import enrich_automation_status
+    from datetime import datetime
 
-    return enrich_automation_status(config_manager.get_config())
+    from backend.src.otp_state import enrich_automation_status
+    from backend.src.scheduling import compute_next_daily_run
+
+    cfg = dict(config_manager.get_config())
+    schedule_time = cfg.get("schedule_time", "11:00")
+    next_run = compute_next_daily_run(datetime.now(), schedule_time)
+    cfg["next_run"] = next_run.strftime("%Y-%m-%d %H:%M:%S")
+    return enrich_automation_status(cfg)
 
 @router.post("/api/automation/download")
 async def download_export(db: Session = Depends(get_db)):
@@ -631,6 +669,14 @@ async def get_settings():
         }
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/api/activity-log")
+async def get_activity_log(limit: int = Query(100, ge=1, le=200)):
+    """Return newest-first curated activity events for the Settings panel."""
+    from backend.src.activity_log import read_activity
+
+    return {"entries": read_activity(limit=limit)}
 
 # -----------------------------------------------------------------------------
 # Dashboard Configuration Endpoints
@@ -900,22 +946,32 @@ def get_schema():
 # -----------------------------------------------------------------------------
 
 @router.post("/api/ingest/zip")
-async def ingest_zip(file: UploadFile = File(...), db: Session = Depends(get_db)):
-    """
-    Endpoint for uploading and ingesting an Oura export ZIP file manually.
-    """
-    parser = OuraParser(db)
+async def ingest_zip(file: UploadFile = File(...)):
+    """Upload and ingest an Oura export ZIP file manually."""
     try:
         with tempfile.NamedTemporaryFile(delete=False, suffix=".zip") as tmp_file:
             shutil.copyfileobj(file.file, tmp_file)
             tmp_path = tmp_file.name
-            
-        logger.info(f"Received ZIP file, saved to {tmp_path}")
 
+        logger.info(f"Received ZIP file, saved to {tmp_path}")
         await ingest_zip_async(tmp_path)
         os.remove(tmp_path)
-
         return {"message": "Ingestion successful"}
     except Exception as e:
         logger.error(f"Ingestion error: {e}")
         raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/api/ingest/rebuild")
+async def ingest_rebuild(db: Session = Depends(get_db)):
+    """Clear incremental detection state; next ingest will be a full re-import."""
+    from backend.src.ingestion.state import clear_detection_state
+
+    clear_detection_state(db)
+    db.commit()
+    return {
+        "message": (
+            "Incremental detection state cleared. "
+            "Upload or sync an export to run a full re-ingest."
+        )
+    }

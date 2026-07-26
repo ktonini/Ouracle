@@ -1,4 +1,5 @@
 import { format } from 'date-fns';
+import { normalizeResilience } from '@/lib/resilience';
 
 export interface DaySummary {
   date: string;
@@ -32,12 +33,44 @@ export interface DaySummary {
   timeline: TimelineItem[];
   tags: string[];
   insight: string;
+  batterySamples: BatterySample[];
   battery: number | null;
   batteryTimestamp: string | null;
 }
 
+export interface BatterySample {
+  timestamp: string;
+  level: number;
+  charging: boolean;
+  in_charger: boolean;
+}
+
+export function batteryLevelTone(level: number | null): 'green' | 'yellow' | 'coral' | 'muted' {
+  if (level == null) return 'muted';
+  if (level > 30) return 'green';
+  if (level >= 21) return 'yellow';
+  return 'coral';
+}
+
+function parseSampleTime(timestamp: string): number {
+  const normalized = timestamp.replace(' ', 'T');
+  return new Date(normalized).getTime();
+}
+
+function normalizeBatterySamples(raw: any[]): BatterySample[] {
+  return raw
+    .map((b) => ({
+      timestamp: String(b.timestamp ?? ''),
+      level: typeof b.level === 'number' ? b.level : Number(b.level) || 0,
+      charging: Boolean(b.charging),
+      in_charger: Boolean(b.in_charger),
+    }))
+    .filter((b) => b.timestamp)
+    .sort((a, b) => parseSampleTime(a.timestamp) - parseSampleTime(b.timestamp));
+}
+
 export interface TimelineItem {
-  type: 'sleep' | 'workout' | 'meditation' | 'battery' | 'tag';
+  type: 'sleep' | 'workout' | 'meditation' | 'tag';
   time: string;
   label: string;
   detail?: string;
@@ -119,10 +152,11 @@ export function buildDaySummary(raw: any, dateString: string): DaySummary {
   const avgHr = primarySession?.average_heart_rate ?? null;
   const avgHrv = primarySession?.average_hrv ?? null;
 
-  const resilienceLevel = raw?.resilience?.[0]?.level ?? raw?.resilience?.level ?? null;
+  const resilienceLevel = normalizeResilience(raw?.resilience)?.level ?? null;
 
-  // Handle ring_battery as array (backend returns List[RingBatteryResponse])
-  const batterySamples = Array.isArray(raw?.ring_battery) ? raw.ring_battery : [];
+  const batterySamples = normalizeBatterySamples(
+    Array.isArray(raw?.ring_battery) ? raw.ring_battery : [],
+  );
   const latestBattery = batterySamples.length > 0 ? batterySamples[batterySamples.length - 1] : null;
   const battery = latestBattery?.level ?? null;
   const batteryTimestamp = latestBattery?.timestamp ?? null;
@@ -167,20 +201,6 @@ export function buildDaySummary(raw: any, dateString: string): DaySummary {
     });
   }
 
-  // Add battery samples to timeline
-  batterySamples.forEach((b: any) => {
-    const ts = typeof b.timestamp === 'string'
-      ? b.timestamp.replace(' ', 'T')
-      : b.timestamp;
-    const time = ts ? format(new Date(ts), 'HH:mm') : '--:--';
-    timeline.push({
-      type: 'battery',
-      time,
-      label: 'Ring Battery',
-      detail: `${b.level}%`,
-    });
-  });
-
   const summary: DaySummary = {
     date: dateString,
     greeting: getGreeting(),
@@ -212,6 +232,7 @@ export function buildDaySummary(raw: any, dateString: string): DaySummary {
     },
     timeline,
     tags,
+    batterySamples,
     battery,
     batteryTimestamp,
     insight: '',

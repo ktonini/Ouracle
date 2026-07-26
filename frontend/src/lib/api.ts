@@ -147,6 +147,19 @@ export interface CorrelationResult {
     interpretation: string;
 }
 
+export interface InterestingCorrelation {
+    x_metric: string;
+    y_metric: string;
+    x_label: string;
+    y_label: string;
+    lag_days: number;
+    coefficient: number;
+    sample_count: number;
+    reason: string;
+    interpretation: string;
+    score: number;
+}
+
 export interface AnomalyResult {
     metric_path: string;
     label: string;
@@ -183,6 +196,13 @@ export interface MobileSyncSettings {
     run_command: string;
     server_running: boolean;
     server_status: string;
+}
+
+export interface ActivityLogEntry {
+    ts: string;
+    level: string;
+    category: string;
+    message: string;
 }
 
 export const api = {
@@ -275,6 +295,13 @@ export const api = {
         return res.json();
     },
 
+    getActivityLog: async (limit = 100): Promise<ActivityLogEntry[]> => {
+        const res = await fetch(`${BASE_URL}/api/activity-log?limit=${limit}`);
+        if (!res.ok) throw new Error('Failed to fetch activity log');
+        const data = await res.json();
+        return Array.isArray(data?.entries) ? data.entries : [];
+    },
+
     downloadExport: async () => {
         const res = await fetch(`${BASE_URL}/api/automation/download`, { method: 'POST' });
         const data = await res.json();
@@ -291,6 +318,14 @@ export const api = {
         });
         const data = await res.json();
         if (!res.ok) throw new Error(data.detail || 'Upload failed');
+        return data;
+    },
+
+    /** Clear incremental ingest fingerprints; next sync/upload re-reads all CSVs. */
+    rebuildIngest: async (): Promise<{ message: string }> => {
+        const res = await fetch(`${BASE_URL}/api/ingest/rebuild`, { method: 'POST' });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.detail || 'Failed to reset ingest cache');
         return data;
     },
 
@@ -516,6 +551,21 @@ export const api = {
         });
         const res = await fetch(`${BASE_URL}/api/analysis/correlate?${q.toString()}`);
         if (!res.ok) throw new Error('Failed to compute correlation');
+        return res.json();
+    },
+
+    getInterestingCorrelations: async (
+        start: string,
+        end: string,
+        limit = 6,
+    ): Promise<InterestingCorrelation[]> => {
+        const q = new URLSearchParams({
+            start_date: start,
+            end_date: end,
+            limit: String(limit),
+        });
+        const res = await fetch(`${BASE_URL}/api/analysis/interesting-correlations?${q.toString()}`);
+        if (!res.ok) throw new Error('Failed to fetch interesting correlations');
         return res.json();
     },
 

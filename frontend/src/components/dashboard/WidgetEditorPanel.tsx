@@ -59,7 +59,9 @@ export function WidgetEditorPanel({ onClose, onSave, onChange, widget }: WidgetE
             setStartDate("");
             setEndDate("");
         }
-    }, [widget?.id]); // Only reset when widget ID changes, not on every update
+        // The editor intentionally resets only when switching widget identities.
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [widget?.id]);
 
     // Helper to update parent
     const updateWidget = (updates: Partial<WidgetInstance>) => {

@@ -9,11 +9,14 @@ from __future__ import annotations
 
 from dataclasses import asdict, dataclass
 from datetime import date, datetime, timedelta
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Optional, TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from ..ingestion.state import IngestOutcome
 
 from sqlalchemy.orm import Session
 
-from ..config import config_manager
+from ..config import WAITING_FOR_EXPORT_STATUS, config_manager
 from ..models import Activity, Readiness, Sleep, SleepSession
 
 
@@ -85,6 +88,54 @@ def _ingest_message_when_not_advanced(
     )
 
 
+def apply_post_ingest_outcome(
+    outcome: "IngestOutcome",
+    *,
+    success_message: str = "Sync and ingestion complete!",
+    partial_error: Optional[Exception] = None,
+) -> None:
+    """Update automation status from a structured ingest outcome."""
+
+    advanced = outcome.advanced
+    changed = outcome.changed
+    after_latest = outcome.after_latest
+    now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    err = partial_error or outcome.error
+
+    if err is not None:
+        message = f"Sync complete (partial: {err})"
+        bump_last_run = False
+    elif outcome.skipped_identical_zip:
+        message = _ingest_message_when_not_advanced(
+            after_latest,
+            success_message=success_message,
+        )
+        bump_last_run = False
+    elif advanced:
+        message = success_message
+        bump_last_run = True
+    elif changed and outcome.updated > 0 and outcome.inserted == 0:
+        n = outcome.updated
+        message = (
+            f"Updated {n} existing day(s); no new days yet. Local data refreshed."
+        )
+        bump_last_run = True
+    elif changed:
+        message = success_message
+        bump_last_run = True
+    else:
+        message = _ingest_message_when_not_advanced(
+            after_latest,
+            success_message=success_message,
+        )
+        bump_last_run = False
+
+    kwargs: Dict[str, Any] = {"message": message}
+    if bump_last_run:
+        kwargs["last_run"] = now_str
+    config_manager.update_status("Idle", **kwargs)
+
+
 def apply_post_ingest_result(
     before_latest: Optional[date],
     after_latest: Optional[date],
@@ -92,29 +143,15 @@ def apply_post_ingest_result(
     success_message: str = "Sync and ingestion complete!",
     partial_error: Optional[Exception] = None,
 ) -> None:
-    """Update automation status after a ZIP ingest.
+    """Update automation status after a ZIP ingest (legacy before/after API)."""
 
-    ``last_run`` is only bumped when the newest local Oura day moved forward so
-    "last ingest" does not imply fresh data when the export was stale.
-    """
+    from ..ingestion.state import IngestOutcome
 
-    advanced = ingest_advanced_data(before_latest, after_latest)
-    now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-
-    if partial_error is not None:
-        message = f"Sync complete (partial: {partial_error})"
-    elif advanced:
-        message = success_message
-    else:
-        message = _ingest_message_when_not_advanced(
-            after_latest,
-            success_message=success_message,
-        )
-
-    kwargs: Dict[str, Any] = {"message": message}
-    if advanced:
-        kwargs["last_run"] = now_str
-    config_manager.update_status("Idle", **kwargs)
+    apply_post_ingest_outcome(
+        IngestOutcome(before_latest=before_latest, after_latest=after_latest),
+        success_message=success_message,
+        partial_error=partial_error,
+    )
 
 
 def apply_post_ingest_status(
@@ -139,6 +176,16 @@ def _classify(latest: Optional[date], automation_status: Optional[str]) -> str:
 
     if automation_status in ("otp_needed", "Error"):
         return "blocked"
+    if automation_status == WAITING_FOR_EXPORT_STATUS:
+        # Waiting for a multi-day Oura export is not an active sync spinner state.
+        if latest is None:
+            return "empty"
+        lag = data_lag_days(latest)
+        if lag is None or lag <= 0:
+            return "fresh"
+        if lag <= 2:
+            return "stale"
+        return "very_stale"
     if automation_status and automation_status not in ("Idle",):
         return "syncing"
     if latest is None:
@@ -161,12 +208,19 @@ def build_sync_freshness(
     if the caller has it; otherwise we report only what config knows.
     """
 
+    from datetime import datetime
+
+    from ..scheduling import compute_next_daily_run
+
     cfg = config_manager.get_config()
     latest = _latest_day(db)
     expected = expected_latest_day()
     automation_status = cfg.get("status")
     last_run = cfg.get("last_run")
-    next_run = cfg.get("next_run")
+    schedule_time = cfg.get("schedule_time", "11:00")
+    next_run = compute_next_daily_run(datetime.now(), schedule_time).strftime(
+        "%Y-%m-%d %H:%M:%S"
+    )
     message = cfg.get("message") if isinstance(cfg.get("message"), str) else None
 
     last_export_request = cfg.get("last_export_request_at") or None

@@ -1,39 +1,90 @@
-import { app, BrowserWindow, Tray, Menu, nativeImage } from 'electron';
+import { app, BrowserWindow, Tray, Menu, nativeImage, nativeTheme } from 'electron';
+import type { NativeImage } from 'electron';
 import path from 'path';
 import { spawn, ChildProcess } from 'child_process';
+import { appendFileSync, existsSync, readFileSync, writeFileSync } from 'fs';
 import http from 'http';
 
 let mainWindow: BrowserWindow | null;
 let pythonProcess: ChildProcess | null = null;
 let tray: Tray | null = null;
 let isQuitting = false;
+let startHidden = false;
 
 const isDev = process.env.NODE_ENV === 'development';
+const LAUNCH_AT_LOGIN_ARG = '--hidden';
 
-function createTray() {
-    // We are in shell/electron/main.ts (compiled to dist-electron/main.js)
-    // So __dirname is shell/dist-electron
-    // We need to go up to shell/public
-    const iconPath = isDev
-        ? path.join(__dirname, '../public/icon.png')
-        : path.join(__dirname, '../dist/icon.png');
+type DesktopPrefs = {
+    launchOnStartup: boolean;
+};
 
-    console.log("Attempting to load Tray icon from:", iconPath);
+function desktopPrefsPath(): string {
+    return path.join(app.getPath('userData'), 'desktop-prefs.json');
+}
 
-    // Use a simple icon or fallback
-    let icon = nativeImage.createFromPath(iconPath);
-
-    if (icon.isEmpty()) {
-        console.error("Tray icon is EMPTY/MISSING at", iconPath);
-        // Try to resize it if it's an SVG? Or maybe it just failed to load.
-    } else {
-        console.log("Tray icon loaded successfully. Size:", icon.getSize());
-        // Resize for macOS tray (usually 16x16 or 22x22)
-        icon = icon.resize({ width: 22, height: 22 });
+function readDesktopPrefs(): DesktopPrefs {
+    try {
+        const raw = readFileSync(desktopPrefsPath(), 'utf8');
+        const parsed = JSON.parse(raw) as Partial<DesktopPrefs>;
+        return {
+            // Default on so scheduled sync / auto OTP keep working after reboot.
+            launchOnStartup: parsed.launchOnStartup !== false,
+        };
+    } catch {
+        return { launchOnStartup: true };
     }
+}
 
-    tray = new Tray(icon);
-    tray.setToolTip('Cracked Oura');
+function writeDesktopPrefs(prefs: DesktopPrefs) {
+    try {
+        writeFileSync(desktopPrefsPath(), JSON.stringify(prefs, null, 2), 'utf8');
+    } catch (error: any) {
+        logToDesktop(`Failed to write desktop prefs: ${error?.message || error}`);
+    }
+}
+
+function applyLaunchOnStartup(enabled: boolean) {
+    if (!app.isPackaged) {
+        return;
+    }
+    app.setLoginItemSettings({
+        openAtLogin: enabled,
+        openAsHidden: true,
+        path: process.execPath,
+        args: enabled ? [LAUNCH_AT_LOGIN_ARG] : [],
+    });
+    writeDesktopPrefs({ launchOnStartup: enabled });
+    logToDesktop(`Launch on startup ${enabled ? 'enabled' : 'disabled'}`);
+}
+
+function ensureLaunchOnStartupConfigured() {
+    if (!app.isPackaged) {
+        logToDesktop('Dev mode: skip login-item registration');
+        return;
+    }
+    const prefs = readDesktopPrefs();
+    applyLaunchOnStartup(prefs.launchOnStartup);
+}
+
+function launchedFromLogin(): boolean {
+    if (process.argv.includes(LAUNCH_AT_LOGIN_ARG)) {
+        return true;
+    }
+    try {
+        const login = app.getLoginItemSettings();
+        return Boolean(login.wasOpenedAtLogin || login.wasOpenedAsHidden);
+    } catch {
+        return false;
+    }
+}
+
+function rebuildTrayMenu() {
+    if (!tray) {
+        return;
+    }
+    const launchOnStartup = app.isPackaged
+        ? readDesktopPrefs().launchOnStartup
+        : false;
 
     const contextMenu = Menu.buildFromTemplate([
         {
@@ -47,6 +98,16 @@ function createTray() {
                 }
             }
         },
+        {
+            label: 'Launch at startup',
+            type: 'checkbox',
+            checked: launchOnStartup,
+            enabled: app.isPackaged,
+            click: (item) => {
+                applyLaunchOnStartup(item.checked);
+                rebuildTrayMenu();
+            }
+        },
         { type: 'separator' },
         {
             label: 'Quit',
@@ -58,6 +119,102 @@ function createTray() {
     ]);
 
     tray.setContextMenu(contextMenu);
+}
+
+function trayAssetCandidates(fileName: string): string[] {
+    return [
+        path.join(__dirname, 'assets', fileName),
+        path.join(__dirname, '..', 'electron', 'assets', fileName),
+        path.join(process.resourcesPath, 'assets', fileName),
+    ];
+}
+
+function loadTrayImage(fileName: string): NativeImage | null {
+    for (const candidate of trayAssetCandidates(fileName)) {
+        if (!existsSync(candidate)) {
+            continue;
+        }
+        const image = nativeImage.createFromPath(candidate);
+        if (!image.isEmpty()) {
+            logToDesktop(`Loaded tray icon from ${candidate}`);
+            return image;
+        }
+    }
+    return null;
+}
+
+function buildFallbackTrayIcon(forDarkTaskbar: boolean): NativeImage {
+    // Tiny procedural bitmap so a missing asset never yields an invisible tray.
+    const size = 32;
+    const buf = Buffer.alloc(size * size * 4);
+    const cx = (size - 1) / 2;
+    const cy = (size - 1) / 2 + 1;
+    const outer = size * 0.38;
+    const inner = size * 0.22;
+    const [fr, fg, fb] = forDarkTaskbar ? [236, 244, 248] : [30, 41, 54];
+    const [sr, sg, sb] = forDarkTaskbar ? [20, 28, 36] : [255, 255, 255];
+
+    for (let y = 0; y < size; y++) {
+        for (let x = 0; x < size; x++) {
+            const dx = x - cx;
+            const dy = y - cy;
+            const dist = Math.sqrt(dx * dx + dy * dy);
+            const i = (y * size + x) * 4;
+            const onRing = dist <= outer && dist >= inner;
+            const onBar = y >= 3 && y <= 7 && x >= 10 && x <= 21;
+            if (onRing || onBar) {
+                const edge = onRing && (dist > outer - 1.2 || dist < inner + 1.2);
+                buf[i] = edge ? sr : fr;
+                buf[i + 1] = edge ? sg : fg;
+                buf[i + 2] = edge ? sb : fb;
+                buf[i + 3] = 255;
+            }
+        }
+    }
+
+    return nativeImage.createFromBitmap(buf, { width: size, height: size });
+}
+
+function resolveTrayIcon(): NativeImage {
+    // Prefer the brand-blue mark: readable on both dark and light Windows taskbars.
+    // Theme-specific glyphs remain as fallbacks.
+    const forDarkTaskbar = nativeTheme.shouldUseDarkColors || nativeTheme.shouldUseInvertedColorScheme;
+    const preferred = [
+        'tray-accent-32.png',
+        'tray-accent.png',
+        ...(forDarkTaskbar
+            ? ['tray-for-dark-taskbar-32.png', 'tray-for-dark-taskbar.png']
+            : ['tray-for-light-taskbar-32.png', 'tray-for-light-taskbar.png']),
+    ];
+
+    for (const name of preferred) {
+        const image = loadTrayImage(name);
+        if (image) {
+            const size = process.platform === 'win32' ? 16 : 22;
+            return image.resize({ width: size, height: size, quality: 'best' });
+        }
+    }
+
+    logToDesktop('Tray assets missing; using procedural fallback icon');
+    return buildFallbackTrayIcon(forDarkTaskbar);
+}
+
+function syncTrayIcon() {
+    if (!tray) {
+        return;
+    }
+    tray.setImage(resolveTrayIcon());
+}
+
+function createTray() {
+    const icon = resolveTrayIcon();
+    tray = new Tray(icon);
+    tray.setToolTip('Cracked Oura');
+    rebuildTrayMenu();
+
+    nativeTheme.on('updated', () => {
+        syncTrayIcon();
+    });
 
     tray.on('double-click', () => {
         if (mainWindow) {
@@ -97,6 +254,10 @@ function createWindow() {
 
     mainWindow.once('ready-to-show', () => {
         logToDesktop("Window ready to show");
+        if (startHidden) {
+            logToDesktop("Started at login; keeping window hidden in tray");
+            return;
+        }
         mainWindow?.show();
     });
 
@@ -186,7 +347,7 @@ function logToDesktop(message: string) {
     try {
         const logPath = path.join(app.getPath('documents'), 'cracked_oura_electron_debug.log');
         const timestamp = new Date().toISOString();
-        require('fs').appendFileSync(logPath, `[${timestamp}] ${message}\n`);
+        appendFileSync(logPath, `[${timestamp}] ${message}\n`);
     } catch (e) {
         console.error("Failed to write to log file", e);
     }
@@ -214,7 +375,7 @@ function startPythonBackend() {
         logToDesktop("Running in PROD mode");
         // Production: Run the compiled executable directly
 
-        if (!require('fs').existsSync(exePath)) {
+        if (!existsSync(exePath)) {
             logToDesktop(`CRITICAL ERROR: Backend executable NOT FOUND at ${exePath}`);
         } else {
             logToDesktop(`Backend executable confirmed at ${exePath}`);
@@ -263,6 +424,9 @@ function startPythonBackend() {
 }
 
 app.on('ready', async () => {
+    ensureLaunchOnStartupConfigured();
+    startHidden = launchedFromLogin();
+    logToDesktop(`App ready (packaged=${app.isPackaged}, startHidden=${startHidden})`);
     startPythonBackend();
     try {
         await waitForBackendReady();

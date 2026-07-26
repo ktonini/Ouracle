@@ -1,7 +1,6 @@
 import { useState } from 'react';
 import { HealthSidebar } from './HealthSidebar';
 import { TopDateBar } from './TopDateBar';
-import { ContextRail } from './ContextRail';
 import { SettingsPanel } from '@/components/dashboard/SettingsPanel';
 import { WidgetEditorPanel } from '@/components/dashboard/WidgetEditorPanel';
 import { ChatPanel } from '@/components/dashboard/ChatPanel';
@@ -10,6 +9,7 @@ import { SleepView } from '@/components/views/SleepView';
 import { ReadinessView } from '@/components/views/ReadinessView';
 import { ActivityView } from '@/components/views/ActivityView';
 import { ResilienceView } from '@/components/views/ResilienceView';
+import { BatteryView } from '@/components/views/BatteryView';
 import { TrendsView } from '@/components/views/TrendsView';
 import { ExplorerView } from '@/components/views/ExplorerView';
 import { JournalView } from '@/components/views/JournalView';
@@ -113,11 +113,6 @@ export function AppShell({
   const hour = new Date().getHours();
   const timeOfDay = hour < 12 ? 'morning' : hour < 17 ? 'afternoon' : 'evening';
 
-  const handleAiPrompt = (prompt: string) => {
-    onViewChange('ai');
-    sendMessage(prompt);
-  };
-
   const handleLayoutChange = (newLayout: any[]) => {
     updateActiveDashboard({ layout: newLayout });
   };
@@ -199,6 +194,8 @@ export function AppShell({
         return <ActivityView />;
       case 'resilience':
         return <ResilienceView />;
+      case 'battery':
+        return <BatteryView />;
       case 'trends':
         return <TrendsView />;
       case 'explorer':
@@ -228,8 +225,6 @@ export function AppShell({
     }
   };
 
-  const showContextRail = ['today', 'sleep', 'readiness', 'activity', 'resilience'].includes(activeView);
-
   return (
     <div className="flex h-screen w-full overflow-hidden bg-background text-foreground relative">
       {/* Atmospheric Background */}
@@ -252,8 +247,6 @@ export function AppShell({
           syncStatus={syncStatus}
           onSync={handleSync}
           isSyncing={isSyncingNow || syncStatus?.status === 'Processing'}
-          battery={summary?.battery ?? null}
-          batteryTimestamp={summary?.batteryTimestamp ?? null}
           dashboards={dashboards}
           activeDashboardId={activeDashboardId}
           onDashboardSelect={onDashboardSelect}
@@ -271,6 +264,11 @@ export function AppShell({
           onDateChange={onDateChange}
           syncStatus={syncStatus ?? undefined}
           connectionStatus={connectionStatus}
+          ringStatus={{
+            battery: summary?.battery ?? null,
+            batteryTimestamp: summary?.batteryTimestamp ?? null,
+            onOpenBattery: () => onViewChange('battery'),
+          }}
           rightActions={
             <>
               <Button
@@ -311,16 +309,6 @@ export function AppShell({
             {renderView()}
           </main>
 
-          {/* Context Rail */}
-          {showContextRail && summary && (
-            <ContextRail
-              summary={summary}
-              battery={summary.battery}
-              batteryTimestamp={summary.batteryTimestamp}
-              timeline={summary.timeline}
-              onAiPrompt={handleAiPrompt}
-            />
-          )}
         </div>
       </div>
 

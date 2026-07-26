@@ -1,5 +1,4 @@
 import pandas as pd
-import uuid
 import logging
 from datetime import datetime
 from backend.src.models import Sleep, SleepSession
@@ -15,14 +14,12 @@ class SleepProcessor(IngestionBase):
             if not day_val:
                 continue
 
-            # Handle merged fields
             recommendation = row.get('recommendation')
             if pd.isna(recommendation): recommendation = None
             
             status = row.get('status')
             if pd.isna(status): status = None
 
-            # SpO2 parsing
             spo2_data = self._parse_json_col(row.get('spo2_percentage'))
             avg_spo2 = None
             if isinstance(spo2_data, dict):
@@ -30,29 +27,19 @@ class SleepProcessor(IngestionBase):
             
             breathing_index = self._parse_int(row.get('breathing_disturbance_index'))
 
-            # Robust ID generation
-            id_val = row.get('id')
-            if pd.isna(id_val) or str(id_val).lower() == 'nan' or str(id_val).strip() == '':
-                id_val = str(uuid.uuid4())
-
             rec = Sleep(
-                id=str(id_val),
+                id=self._day_pk("sleep", day_val),
                 day=day_val,
                 score=self._parse_int(row.get('score')),
-                # timestamp field removed from model, ignoring here if present
                 contributors=self._parse_json_col(row.get('contributors')),
-                
-                # Merged fields
                 optimal_bedtime=self._parse_json_col(row.get('optimal_bedtime')),
                 recommendation=recommendation,
                 status=status,
-                
-                # SpO2 fields
                 average_spo2=avg_spo2,
                 breathing_disturbance_index=breathing_index
             )
             records.append(rec)
-        self._upsert(Sleep, records, ['day'])
+        self._upsert_content_aware(Sleep, records, ['day'])
 
     def process_sleep_session(self, file_path: str):
         df = self._read_csv_robust(file_path)
@@ -74,9 +61,16 @@ class SleepProcessor(IngestionBase):
                 if not bedtime_start:
                     continue
 
+                day_val = self._parse_date(row.get('day'))
+                sid = self._oura_or_synthetic(
+                    row,
+                    "sleep_session",
+                    [day_val, bedtime_start, row.get('type')],
+                )
+
                 sleep = SleepSession(
-                    id=str(row.get('id', uuid.uuid4())),
-                    day=self._parse_date(row.get('day')),
+                    id=sid,
+                    day=day_val,
                     start_time=bedtime_start,
                     end_time=self._parse_datetime(row.get('bedtime_end')),
                     type=row.get('type'),
@@ -89,13 +83,9 @@ class SleepProcessor(IngestionBase):
                     awake_time=self._parse_int(row.get('awake_time')),
                     average_heart_rate=self._parse_float(row.get('average_heart_rate')),
                     average_hrv=self._parse_int(row.get('average_hrv')),
-                    
-                    # Sequences converted to Timestamped Lists
                     sleep_phase_5_min=self._parse_sequence_to_timestamped_list(row.get('sleep_phase_5_min'), bedtime_start, 300),
                     sleep_phase_30_sec=self._parse_sequence_to_timestamped_list(row.get('sleep_phase_30_sec'), bedtime_start, 30),
                     movement_30_sec=self._parse_sequence_to_timestamped_list(row.get('movement_30_sec'), bedtime_start, 30),
-                    
-                    # Detailed fields
                     average_breath=self._parse_float(row.get('average_breath')),
                     bedtime_end=self._parse_datetime(row.get('bedtime_end')),
                     bedtime_start=bedtime_start,
@@ -106,7 +96,6 @@ class SleepProcessor(IngestionBase):
                     sleep_algorithm_version=row.get('sleep_algorithm_version'),
                     sleep_score_delta=self._parse_int(row.get('sleep_score_delta')),
                     time_in_bed=self._parse_int(row.get('time_in_bed')),
-
                     hr_data=self._parse_sequence_to_timestamped_list(row.get('heart_rate'), bedtime_start, 300),
                     hrv_data=self._parse_sequence_to_timestamped_list(row.get('hrv'), bedtime_start, 300),
                     readiness=self._parse_json_col(row.get('readiness')),
@@ -117,4 +106,4 @@ class SleepProcessor(IngestionBase):
                 logger.error(f"Error parsing sleep_session row: {e}")
                 continue
         
-        self._upsert(SleepSession, records, ['id'])
+        self._upsert_content_aware(SleepSession, records, ['id'])
