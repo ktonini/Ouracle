@@ -126,7 +126,7 @@ The Oura export zip contains a `sleepmodel.csv` file that triggered an unhandled
 ## Data Verification (2026-05-19)
 
 ```
-Database: C:\Users\daniel\AppData\Roaming\CrackedOura\oura_database.db
+Database: C:\Users\<user>\AppData\Roaming\CrackedOura\oura_database.db
 
   sleep              1,152 records
   activity           1,188 records
@@ -144,7 +144,7 @@ Database: C:\Users\daniel\AppData\Roaming\CrackedOura\oura_database.db
 
 All fixes compiled via PyInstaller into `backend.exe` and deployed to:
 ```
-C:\Users\daniel\AppData\Local\Programs\Cracked Oura\resources\backend\backend.exe
+C:\Users\<user>\AppData\Local\Programs\Cracked Oura\resources\backend\backend.exe
 ```
 
 ## Lessons Learned

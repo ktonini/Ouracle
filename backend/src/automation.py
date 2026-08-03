@@ -315,8 +315,9 @@ class OuraAutomator:
             pass
         if not self._is_logged_in():
              # Re-check OTP in case of network lag
-             if await self._check_otp_screen():
-                 return {"status": "otp_required", "message": "OTP required"}
+             otp_status = await self._check_otp_screen()
+             if otp_status:
+                 return otp_status
              raise Exception("Login failed or incomplete.")
         
         logger.info("Login process completed successfully.")
@@ -390,16 +391,30 @@ class OuraAutomator:
         """Clicks Oura's send-code control when present. Returns True if clicked."""
         if not self.page:
             return False
-        intermediate_btn = self.page.locator("button[name='selectedId']")
-        if await intermediate_btn.is_visible():
-            logger.info("Clicking Oura 'Send code' button.")
-            await intermediate_btn.click()
+        send_code_selectors = [
+            "button[name='selectedId']",
+            "button[name='resend']",
+            "button[data-testid*='resend' i]",
+            "button:has-text('Resend code')",
+            "button:has-text('Send new code')",
+            "a:has-text('Resend code')",
+            "a:has-text('Send new code')",
+        ]
+        for selector in send_code_selectors:
+            send_code_button = self.page.locator(selector).first
             try:
-                await self._ensure_page_alive()
-                await self.page.wait_for_timeout(3000)
+                if not await send_code_button.is_visible(timeout=500):
+                    continue
+                logger.info("Clicking Oura send/resend code control.")
+                await send_code_button.click()
+                try:
+                    await self._ensure_page_alive()
+                    await self.page.wait_for_timeout(3000)
+                except Exception:
+                    pass
+                return True
             except Exception:
-                pass
-            return True
+                continue
         return False
 
     async def resend_otp(self) -> Dict[str, str]:
@@ -448,7 +463,8 @@ class OuraAutomator:
         if not self.page:
             return {"status": "error", "message": "Page not initialized"}
 
-        logger.info(f"Submitting OTP: {otp}")
+        # Never write the code itself to the log file.
+        logger.info("Submitting OTP (%d digits).", len(otp or ""))
         try:
             otp_selectors = [
                 "input[name='otp']",
@@ -632,7 +648,11 @@ class OuraAutomator:
                 if "login" in self.page.url or "authn" in self.page.url:
                     login_res = await self.login()
                     if login_res and login_res.get("status") == "otp_required":
-                        return {"status": "otp_required"}
+                        return {
+                            "status": "otp_required",
+                            "message": login_res.get("message", "OTP required"),
+                            "code_sent": bool(login_res.get("code_sent")),
+                        }
                     # Login succeeded, retry navigation
                     if not await self._navigate_to_export_page():
                         return {
@@ -732,7 +752,11 @@ class OuraAutomator:
                 if "login" in self.page.url or "authn" in self.page.url:
                     login_res = await self.login()
                     if login_res and login_res.get("status") == "otp_required":
-                        return {"status": "otp_required"}
+                        return {
+                            "status": "otp_required",
+                            "message": login_res.get("message", "OTP required"),
+                            "code_sent": bool(login_res.get("code_sent")),
+                        }
                     # Login succeeded, retry navigation
                     if not await self._navigate_to_export_page():
                         return {"status": "error", "message": "Could not open Oura data export page."}

@@ -76,7 +76,7 @@ export function TopDateBar({
                 mode="single"
                 selected={selectedDate}
                 onSelect={(d) => d && onDateChange(d)}
-                initialFocus
+                autoFocus
               />
             </PopoverContent>
           </Popover>

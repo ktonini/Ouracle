@@ -8,15 +8,18 @@ from email.utils import parsedate_to_datetime
 import json
 from pathlib import Path
 import re
+import time
 from typing import Any
 from urllib.error import URLError
 from urllib.request import Request, urlopen
 
+from .betterbird import BetterbirdUnavailable, ensure_betterbird_running, is_betterbird_running
 from .thunderbird_otp import DEFAULT_CODE_PATTERN, FoundOtp, find_fresh_otp
 
 
 REQUEST_TIME_SKEW_SECONDS = 30
 LIVE_RPC_TIMEOUT_MARGIN_SECONDS = 10
+BETTERBIRD_RPC_RETRY_SECONDS = 1
 
 
 class LiveMailboxUnavailable(RuntimeError):
@@ -81,7 +84,7 @@ def _wait_for_live_mailbox_otp(config: dict[str, Any]) -> FoundOtp | None:
     subject = str(config.get("auto_otp_subject", "One time password"))
     account_email = str(config.get("email", "")).casefold()
 
-    accounts = _rpc(base_url, "listAccounts", {}, timeout_seconds=15)
+    accounts = _expect_records(_ensure_betterbird_ready(config, base_url), "listAccounts")
     account_ids = {
         account.get("id")
         for account in accounts
@@ -90,7 +93,10 @@ def _wait_for_live_mailbox_otp(config: dict[str, Any]) -> FoundOtp | None:
     if not account_ids:
         raise LiveMailboxUnavailable("Configured Oura mailbox is not available in Betterbird")
 
-    folders = _rpc(base_url, "listFolders", {}, timeout_seconds=15)
+    folders = _expect_records(
+        _rpc(base_url, "listFolders", {}, timeout_seconds=15),
+        "listFolders",
+    )
     folder_ids = [
         folder.get("id")
         for folder in folders
@@ -112,6 +118,8 @@ def _wait_for_live_mailbox_otp(config: dict[str, Any]) -> FoundOtp | None:
         },
         timeout_seconds=min(130, timeout_seconds + LIVE_RPC_TIMEOUT_MARGIN_SECONDS),
     )
+    if not isinstance(result, dict):
+        raise LiveMailboxUnavailable("Betterbird bridge returned an unexpected waitForMessage result")
     if not result.get("found"):
         return None
 
@@ -130,6 +138,48 @@ def _wait_for_live_mailbox_otp(config: dict[str, Any]) -> FoundOtp | None:
         sender=str(message.get("author", "")),
         subject=str(message.get("subject", "")),
     )
+
+
+def _expect_records(value: Any, method: str) -> list[dict[str, Any]]:
+    """Treat an unexpected bridge payload as 'bridge unavailable', not a crash.
+
+    The mailbox bridge is an optional external add-on, so a malformed reply
+    must fall back to the read-only mbox reader like any other failure.
+    """
+    if not isinstance(value, list) or not all(isinstance(item, dict) for item in value):
+        raise LiveMailboxUnavailable(f"Betterbird bridge returned an unexpected {method} result")
+    return value
+
+
+def _ensure_betterbird_ready(config: dict[str, Any], base_url: str) -> Any:
+    """Start Betterbird if needed and wait for its local bridge to initialize."""
+    if not bool(config.get("auto_otp_betterbird_launch_enabled", True)):
+        if not is_betterbird_running():
+            raise LiveMailboxUnavailable("Betterbird launch is disabled and it is not running")
+    else:
+        try:
+            ensure_betterbird_running(config)
+        except BetterbirdUnavailable as exc:
+            raise LiveMailboxUnavailable(str(exc)) from exc
+
+    wait_seconds = max(
+        0,
+        int(config.get("auto_otp_betterbird_startup_wait_seconds", 60)),
+    )
+    deadline = time.monotonic() + wait_seconds
+    last_error: Exception | None = None
+    while True:
+        try:
+            return _rpc(base_url, "listAccounts", {}, timeout_seconds=3)
+        except LiveMailboxUnavailable as exc:
+            last_error = exc
+        if time.monotonic() >= deadline:
+            detail = f": {last_error}" if last_error else ""
+            raise LiveMailboxUnavailable(
+                "Betterbird mailbox bridge did not become ready within "
+                f"{wait_seconds} seconds{detail}"
+            )
+        time.sleep(min(BETTERBIRD_RPC_RETRY_SECONDS, max(0, deadline - time.monotonic())))
 
 
 def _rpc(base_url: str, method: str, params: dict[str, Any], *, timeout_seconds: int) -> Any:

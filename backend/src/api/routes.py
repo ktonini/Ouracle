@@ -1,4 +1,3 @@
-import asyncio
 import logging
 import os
 import shutil
@@ -31,7 +30,6 @@ from .schemas import (
     ResilienceResponse, TemperatureResponse, MeditationResponse
 )
 from ..automation import automator
-from ..llm import DataAnalyst
 
 # Logging
 logger = logging.getLogger("API")
@@ -117,179 +115,11 @@ def _coerce_downloaded_zip_path(result: Any) -> str:
 # -----------------------------------------------------------------------------
 
 async def run_full_sync_task(db_session_factory):
-    """
-    Executes the synchronization process:
-    1. Download a ready export if present.
-    2. Otherwise request a new export and enter durable Waiting for export.
-    3. When a file is available, ingest into SQLite.
-    """
-    del db_session_factory  # ingest opens its own DB session off the event loop
-    cfg = config_manager.get_config()
-    if cfg.get("status") == WAITING_FOR_EXPORT_STATUS:
-        from backend.src.api.main import run_check_export_ready_task
+    """Run the canonical sync worker, including automatic OTP recovery."""
+    del db_session_factory
+    from backend.src.api.main import run_ingestion_task
 
-        await run_check_export_ready_task(force=True)
-        return
-
-    config_manager.update_status("Processing", message="Starting full sync...")
-    waiting_for_otp = False
-    need_fresh_export = False
-    try:
-        cfg = config_manager.get_config()
-        if automator._is_initialized:
-            try:
-                await automator.cleanup()
-            except Exception as exc:
-                logger.warning("Full sync: cleanup before start failed: %s", exc)
-        await automator.initialize(headless=cfg.get("headless", True))
-        automator.email = cfg.get("email", "")
-
-        with tempfile.TemporaryDirectory() as temp_dir:
-            # If Oura already emailed that the export is ready, download it first.
-            config_manager.update_status(
-                "Processing",
-                message="Checking for a ready export on Oura...",
-            )
-            result = await automator.download_existing_export(temp_dir)
-
-            if isinstance(result, str) and result:
-                zip_path = result
-                config_manager.update_status(
-                    "Processing",
-                    message=(
-                        "Downloaded an existing Oura export from your account "
-                        "(not necessarily from a new email). Ingesting…"
-                    ),
-                )
-                logger.info("Full sync: Downloaded existing export to %s", zip_path)
-                advanced = await ingest_zip_async(zip_path)
-                if advanced:
-                    return
-                logger.info(
-                    "Full sync: existing export did not add new days; "
-                    "requesting a fresh export from Oura."
-                )
-                config_manager.update_status(
-                    "Processing",
-                    message=(
-                        "The export on Oura was outdated (no new days). "
-                        "Requesting a fresh export from Oura…"
-                    ),
-                )
-                try:
-                    await automator.cleanup()
-                except Exception as exc:
-                    logger.warning("Full sync: cleanup before fresh export failed: %s", exc)
-                await automator.initialize(headless=cfg.get("headless", True))
-                automator.email = cfg.get("email", "")
-                need_fresh_export = True
-
-            elif isinstance(result, dict):
-                if result.get("status") == "otp_required":
-                    waiting_for_otp = True
-                    from backend.src.otp_state import mark_otp_requested, otp_prompt_message
-
-                    if result.get("code_sent"):
-                        mark_otp_requested()
-                    cfg = config_manager.get_config()
-                    config_manager.update_status(
-                        "otp_needed",
-                        message=otp_prompt_message(cfg, "Check your email for a verification code."),
-                    )
-                    logger.warning("Full sync paused: OTP required.")
-                    return
-                if result.get("status") == "error":
-                    logger.warning("Full sync: no ready export yet: %s", result.get("message"))
-                    need_fresh_export = True
-            else:
-                logger.info("Full sync: no existing export file to download.")
-                need_fresh_export = True
-
-            if not need_fresh_export:
-                return
-
-            config_manager.update_status(
-                "Processing",
-                message="Requesting a new Oura export (generation can take days)...",
-            )
-
-            result = await automator.request_new_export_and_download(
-                temp_dir,
-                skip_ready_download=True,
-                wait_for_ready=False,
-            )
-
-            # Handle OTP requirement — keep session alive so user can submit code
-            if isinstance(result, dict) and result.get("status") == "otp_required":
-                waiting_for_otp = True
-                from backend.src.otp_state import mark_otp_requested, otp_prompt_message
-
-                if result.get("code_sent"):
-                    mark_otp_requested()
-                cfg = config_manager.get_config()
-                config_manager.update_status(
-                    "otp_needed",
-                    message=otp_prompt_message(cfg, "Check your email for a verification code."),
-                )
-                logger.warning("Full sync paused: OTP required. Waiting for user to submit code.")
-                return
-
-            if isinstance(result, dict) and result.get("status") in ("export_requested", "export_processing"):
-                from backend.src.export_wait import mark_waiting_for_export
-
-                mark_waiting_for_export(requested_now=True)
-                return
-
-            zip_path = result
-            
-            # Process successfully downloaded file
-            if zip_path and isinstance(zip_path, str):
-                config_manager.update_status("Processing", message=f"Downloaded to {zip_path}. Ingesting...")
-                logger.info("Full sync: Downloaded to %s. Ingesting...", zip_path)
-                config_manager.update_status(
-                    "Processing",
-                    message=(
-                        "Downloaded an existing Oura export from your account "
-                        "(not necessarily from a new email). Ingesting…"
-                    ),
-                )
-                from backend.src.ingestion.runner import ingest_zip_blocking
-                from backend.src.insights.sync_freshness import apply_post_ingest_outcome
-
-                outcome = await asyncio.to_thread(ingest_zip_blocking, zip_path)
-                apply_post_ingest_outcome(
-                    outcome,
-                    success_message="Sync and ingestion complete!",
-                )
-                if outcome.skipped_identical_zip:
-                    config_manager.update_status(
-                        "Idle",
-                        message="Oura has not produced newer data yet. Try again later.",
-                    )
-                if outcome.error:
-                    raise outcome.error
-                logger.info("Full sync: Ingestion complete.")
-            elif isinstance(result, dict) and result.get("status") == "error":
-                logger.error("Full sync failed: %s", result.get("message"))
-                config_manager.update_status("Error", message=result.get("message", "Sync failed"))
-            else:
-                detail = repr(result) if result is not None else "no response from Oura automation"
-                logger.error("Full sync failed: No file downloaded (%s).", detail)
-                config_manager.update_status(
-                    "Error",
-                    message=(
-                        "No file downloaded from Oura. If you received an export email, "
-                        "wait a minute and try Sync now again. Otherwise check that you are "
-                        "still logged in under Settings → Connection."
-                    ),
-                )
-                
-    except Exception as e:
-        logger.error(f"Full sync task error: {e}")
-        config_manager.update_status("Error", message=f"Sync failed: {e}")
-    finally:
-        if not waiting_for_otp:
-            await automator.cleanup()
+    await run_ingestion_task(force=True)
 
 # -----------------------------------------------------------------------------
 # Chat / Advisor Endpoints
@@ -460,6 +290,10 @@ async def chat(
                     if msg.id != u_msg.id
                 ]
 
+                # Imported lazily: the LLM stack is heavy and only the chat
+                # endpoints need it, so the rest of the API stays importable.
+                from ..llm import DataAnalyst
+
                 advisor = DataAnalyst()
                 full_answer = ""
                 all_thoughts = []
@@ -516,12 +350,32 @@ async def chat(
 @router.post("/api/automation/start-login")
 async def start_login(request: LoginRequest):
     """Initiates the login process via Playwright."""
+    from backend.src.auto_otp import auto_otp_enabled
+    from backend.src.otp_recovery import resolve_otp_or_pause
     from backend.src.otp_state import mark_otp_requested, otp_prompt_message
 
     try:
         config_manager.update_config(email=request.email)
         result = await automator.start_login(request.email)
         if isinstance(result, dict) and result.get("status") == "otp_required":
+            if auto_otp_enabled(config_manager.get_config()):
+                if await resolve_otp_or_pause(result, automator_instance=automator):
+                    config_manager.update_status(
+                        "Idle",
+                        message="Signed in to Oura successfully.",
+                        logged_in=True,
+                    )
+                    return {
+                        "status": "success",
+                        "message": "Login successful; verification code retrieved automatically.",
+                    }
+                return {
+                    "status": "otp_required",
+                    "message": (
+                        config_manager.get_config().get("message") or "OTP required"
+                    ),
+                    "code_sent": bool(result.get("code_sent")),
+                }
             if result.get("code_sent"):
                 mark_otp_requested()
             cfg = config_manager.get_config()
@@ -538,11 +392,32 @@ async def start_login(request: LoginRequest):
 @router.post("/api/automation/resend-otp")
 async def resend_otp():
     """Ask Oura to send a fresh verification email."""
+    from backend.src.auto_otp import auto_otp_enabled
+    from backend.src.otp_recovery import resolve_otp_or_pause
     from backend.src.otp_state import otp_prompt_message
 
     try:
         result = await automator.resend_otp()
         if result.get("status") == "otp_required":
+            if auto_otp_enabled(config_manager.get_config()):
+                if await resolve_otp_or_pause(result, automator_instance=automator):
+                    config_manager.update_status(
+                        "Idle",
+                        message="Signed in to Oura successfully.",
+                        logged_in=True,
+                    )
+                    return {
+                        "status": "success",
+                        "message": "Verification code retrieved and submitted automatically.",
+                    }
+                return {
+                    **result,
+                    "message": (
+                        config_manager.get_config().get("message")
+                        or result.get("message")
+                        or "OTP required"
+                    ),
+                }
             refreshed = config_manager.get_config()
             config_manager.update_status(
                 "otp_needed",
@@ -600,23 +475,25 @@ async def download_export(db: Session = Depends(get_db)):
     Does not request a new export generation.
     """
     try:
+        from backend.src.otp_recovery import resolve_otp_or_pause
+
         with tempfile.TemporaryDirectory() as temp_dir:
             result = await automator.download_existing_export(temp_dir)
-            
-            # Handle OTP requirement — keep session alive and surface to UI
-            if isinstance(result, dict) and result.get("status") == "otp_required":
-                from backend.src.otp_state import mark_otp_requested, otp_prompt_message
 
-                if result.get("code_sent"):
-                    mark_otp_requested()
-                cfg = config_manager.get_config()
-                config_manager.update_status(
-                    "otp_needed",
-                    message=otp_prompt_message(cfg, "Check your email for a verification code."),
-                )
+            # resolve_otp_or_pause records the code request and, when automatic
+            # recovery is off, leaves the ordinary manual prompt in place.
+            if isinstance(result, dict) and result.get("status") == "otp_required":
+                if await resolve_otp_or_pause(result, automator_instance=automator):
+                    result = await automator.download_existing_export(temp_dir)
+
+            # Still blocked — keep the session alive and surface the prompt.
+            if isinstance(result, dict) and result.get("status") == "otp_required":
                 raise HTTPException(
                     status_code=409,
-                    detail="OTP required. Please enter the code below.",
+                    detail=(
+                        config_manager.get_config().get("message")
+                        or "OTP required. Please enter the code below."
+                    ),
                 )
             
             zip_path = _coerce_downloaded_zip_path(result)

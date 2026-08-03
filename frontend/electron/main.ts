@@ -14,6 +14,26 @@ let startHidden = false;
 const isDev = process.env.NODE_ENV === 'development';
 const LAUNCH_AT_LOGIN_ARG = '--hidden';
 
+// Prevent duplicate tray instances from repeated startup entries or manual launches.
+const gotSingleInstanceLock = app.requestSingleInstanceLock();
+
+if (gotSingleInstanceLock) {
+    app.on('second-instance', (_event, commandLine) => {
+        // A duplicate hidden login launch should simply exit without disturbing the tray app.
+        if (commandLine.includes(LAUNCH_AT_LOGIN_ARG)) {
+            return;
+        }
+
+        if (mainWindow) {
+            if (mainWindow.isMinimized()) {
+                mainWindow.restore();
+            }
+            mainWindow.show();
+            mainWindow.focus();
+        }
+    });
+}
+
 type DesktopPrefs = {
     launchOnStartup: boolean;
 };
@@ -424,6 +444,20 @@ function startPythonBackend() {
 }
 
 app.on('ready', async () => {
+    // A stale singleton lock can survive an unclean shutdown. Only treat a
+    // second launch as a duplicate when the existing app actually serves the
+    // local backend; otherwise let this instance recover and take over.
+    if (!gotSingleInstanceLock) {
+        try {
+            await waitForBackendReady(5000);
+            logToDesktop('Another Cracked Oura instance is active; exiting this duplicate.');
+            app.quit();
+            return;
+        } catch {
+            logToDesktop('Stale Cracked Oura instance lock detected; taking over.');
+        }
+    }
+
     ensureLaunchOnStartupConfigured();
     startHidden = launchedFromLogin();
     logToDesktop(`App ready (packaged=${app.isPackaged}, startHidden=${startHidden})`);

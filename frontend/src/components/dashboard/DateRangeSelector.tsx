@@ -325,7 +325,7 @@ export function DateRangeSelector({ widget, onUpdate, selectedDate = new Date(),
                                     if (range?.to) setInputTo(format(range.to, 'yyyy-MM-dd'));
                                     else setInputTo("");
                                 }}
-                                initialFocus
+                                autoFocus
                                 className="rounded-md border shadow-none w-full"
                             />
                         </div>

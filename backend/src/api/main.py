@@ -19,9 +19,9 @@ from backend.src.ingestion import OuraParser
 from backend.src.config import WAITING_FOR_EXPORT_STATUS, config_manager
 from backend.src.mobile_server_manager import mobile_server_manager
 from backend.src.paths import get_user_data_dir
-from backend.src.auto_otp import auto_otp_enabled, wait_for_configured_otp
 from backend.src.activity_log import append_activity
 from backend.src.export_wait import mark_waiting_for_export
+from backend.src.otp_recovery import MAX_OTP_RECOVERY_ATTEMPTS, resolve_otp_or_pause
 
 # ─── Logging ───
 log_dir = get_user_data_dir()
@@ -284,8 +284,14 @@ async def test_login():
         automator.email = cfg.get("email", "")
         res = await automator.login()
         if res and res.get("status") == "otp_required":
-             config_manager.update_status("Waiting for OTP...")
-             return {"status": "otp_required", "message": "OTP Required"}
+             if await resolve_otp_or_pause(res, automator_instance=automator):
+                 config_manager.update_status("Login Check Complete.")
+                 await automator.cleanup()
+                 return {"status": "success", "message": "Login verified automatically."}
+             return {
+                 "status": "otp_required",
+                 "message": config_manager.get_config().get("message") or "OTP Required",
+             }
         
         config_manager.update_status("Login Check Complete.")
         await automator.cleanup() # Close browser if successful
@@ -294,7 +300,7 @@ async def test_login():
         config_manager.update_status(f"Login Error: {str(e)}")
         return {"status": "error", "message": str(e)}
 
-async def run_download_existing_task():
+async def run_download_existing_task(_otp_attempt: int = 0):
     """
     Standalone task for downloading existing export.
     """
@@ -320,18 +326,21 @@ async def run_download_existing_task():
         result = await automator.download_existing_export(save_dir=save_dir)
         
         if isinstance(result, dict) and result.get("status") == "otp_required":
-            waiting_for_otp = True
-            from backend.src.otp_state import mark_otp_requested, otp_prompt_message
-
-            if result.get("code_sent"):
-                mark_otp_requested()
-            cfg = config_manager.get_config()
-            config_manager.update_status(
-                "otp_needed",
-                message=otp_prompt_message(cfg, "Check your email for a verification code."),
-            )
-            logger.info("Download existing task paused: waiting for OTP.")
-            return
+            if not await resolve_otp_or_pause(result, automator_instance=automator):
+                waiting_for_otp = True
+                logger.info("Download existing task paused: waiting for OTP.")
+                return
+            if _otp_attempt >= MAX_OTP_RECOVERY_ATTEMPTS:
+                logger.warning("Download existing task: OTP kept being required; giving up.")
+                config_manager.update_status(
+                    "Error",
+                    message="Oura kept asking for a verification code. Sign in again in Settings.",
+                )
+                await automator.cleanup()
+                return
+            # Automatic recovery authenticated the session; retry the same
+            # download operation with the saved session.
+            return await run_download_existing_task(_otp_attempt=_otp_attempt + 1)
 
         if isinstance(result, dict):
             # Error dict returned (not a file path)
@@ -382,70 +391,8 @@ async def download_latest_existing(background_tasks: BackgroundTasks):
 
 # --- Background Logic ---
 
-async def _resolve_otp_or_pause(otp_result: dict) -> bool:
-    """Use a fresh local Thunderbird OTP when opted in, otherwise leave UI prompt active.
 
-    Returning ``True`` means the browser session is authenticated and the
-    caller may continue its current sync operation.  This never uploads or
-    modifies mail; it only reads a newly received matching message.
-    """
-    from backend.src.otp_state import clear_otp_request, mark_otp_requested, otp_prompt_message
-
-    code_sent = bool(otp_result.get("code_sent"))
-    if code_sent:
-        mark_otp_requested()
-
-    cfg = config_manager.get_config()
-    if auto_otp_enabled(cfg):
-        # An already-visible OTP form does not guarantee that its code is new.
-        # Request one fresh code before looking in the mailbox cache.
-        if not code_sent:
-            resend_result = await automator.resend_otp()
-            if resend_result.get("status") == "otp_required" and resend_result.get("code_sent"):
-                mark_otp_requested()
-                cfg = config_manager.get_config()
-            else:
-                logger.warning("Automatic OTP resend did not reach Oura's OTP screen: %s", resend_result)
-
-        config_manager.update_status(
-            "otp_needed",
-            message="Waiting for a fresh verification code in Thunderbird/Betterbird…",
-        )
-        found = await wait_for_configured_otp(config_manager.get_config())
-        if found is not None:
-            # Never log the OTP itself.
-            logger.info("Found fresh Oura OTP in local mail cache: %s", found.source_path)
-            append_activity("Found verification code in local mail — submitting…", category="auth")
-            config_manager.update_status("Submitting OTP…", message="Submitting verification code…")
-            submitted = await automator.submit_otp(found.code)
-            if submitted.get("status") == "success":
-                clear_otp_request()
-                config_manager.update_config(logged_in=True)
-                append_activity("Signed in to Oura successfully.", level="success", category="auth")
-                return True
-            logger.warning("Automatic OTP submission failed: %s", submitted.get("message"))
-            config_manager.update_status("otp_needed", message=submitted.get("message", "OTP submission failed."))
-            return False
-
-        cfg = config_manager.get_config()
-        config_manager.update_status(
-            "otp_needed",
-            message=(
-                "No matching fresh verification email appeared in the local Thunderbird/Betterbird cache. "
-                + otp_prompt_message(cfg, "Enter the verification code manually.")
-            ),
-        )
-        return False
-
-    cfg = config_manager.get_config()
-    config_manager.update_status(
-        "otp_needed",
-        message=otp_prompt_message(cfg, "Check your email for a verification code."),
-    )
-    return False
-
-
-async def run_check_export_ready_task(force: bool = False) -> None:
+async def run_check_export_ready_task(force: bool = False, _otp_attempt: int = 0) -> None:
     """Download-existing only — used while Waiting for export so we never re-request."""
     cfg = config_manager.get_config()
     if not force and not cfg.get("is_active", True):
@@ -481,10 +428,20 @@ async def run_check_export_ready_task(force: bool = False) -> None:
             return
 
         if isinstance(result, dict) and result.get("status") == "otp_required":
-            waiting_for_otp = not await _resolve_otp_or_pause(result)
+            waiting_for_otp = not await resolve_otp_or_pause(
+                result,
+                automator_instance=automator,
+            )
             if waiting_for_otp:
                 return
-            return await run_check_export_ready_task(force=True)
+            if _otp_attempt >= MAX_OTP_RECOVERY_ATTEMPTS:
+                logger.warning("Export-ready check: OTP kept being required; giving up.")
+                await automator.cleanup()
+                return
+            return await run_check_export_ready_task(
+                force=True,
+                _otp_attempt=_otp_attempt + 1,
+            )
 
         mark_waiting_for_export(requested_now=False)
         await automator.cleanup()
@@ -505,7 +462,7 @@ async def run_check_export_ready_task(force: bool = False) -> None:
                 pass
 
 
-async def run_ingestion_task(force=False):
+async def run_ingestion_task(force=False, _otp_attempt: int = 0):
     """
     The core logic for checking, requesting, and downloading data.
 
@@ -518,6 +475,17 @@ async def run_ingestion_task(force=False):
 
     if cfg.get("status") == WAITING_FOR_EXPORT_STATUS:
         return await run_check_export_ready_task(force=force)
+
+    def otp_retries_exhausted() -> bool:
+        """True when automatic recovery keeps landing back on the OTP screen."""
+        if _otp_attempt < MAX_OTP_RECOVERY_ATTEMPTS:
+            return False
+        logger.warning("Background worker: OTP kept being required; giving up.")
+        config_manager.update_status(
+            "Error",
+            message="Oura kept asking for a verification code. Sign in again in Settings.",
+        )
+        return True
 
     logger.info("Background worker: Starting ingestion task...")
     config_manager.update_status("Starting...")
@@ -538,7 +506,10 @@ async def run_ingestion_task(force=False):
 
         login_res = await automator.login()
         if login_res and login_res.get("status") == "otp_required":
-            waiting_for_otp = not await _resolve_otp_or_pause(login_res)
+            waiting_for_otp = not await resolve_otp_or_pause(
+                login_res,
+                automator_instance=automator,
+            )
             if waiting_for_otp:
                 logger.info("Background worker paused: OTP required.")
                 return
@@ -550,33 +521,62 @@ async def run_ingestion_task(force=False):
         config_manager.update_status("Running Automation...", message="Checking for a ready export...")
         result = await automator.download_existing_export(save_dir=save_dir)
 
+        # A ready export on Oura is often the same one we already ingested.
+        # Only stop here when it actually moved our newest day forward;
+        # otherwise ask Oura for a freshly generated export.
+        skip_ready_download = False
         if isinstance(result, str) and result:
             file_path = result
             logger.info("Background worker: Downloaded existing export to %s", file_path)
             append_activity("Downloaded an existing ready export.", level="success", category="export")
             config_manager.update_status("Downloading...")
-            await process_ingestion(file_path)
-            await automator.cleanup()
-            return
+            advanced = await process_ingestion(file_path)
+            if advanced is not False:
+                # Advanced, or the ingest failed and already reported why.
+                await automator.cleanup()
+                return
+            logger.info(
+                "Background worker: existing export added no new days; "
+                "requesting a fresh export from Oura."
+            )
+            skip_ready_download = True
 
-        if isinstance(result, dict) and result.get("status") == "otp_required":
-            waiting_for_otp = not await _resolve_otp_or_pause(result)
+        elif isinstance(result, dict) and result.get("status") == "otp_required":
+            waiting_for_otp = not await resolve_otp_or_pause(
+                result,
+                automator_instance=automator,
+            )
             if waiting_for_otp:
                 return
-            return await run_ingestion_task(force=True)
+            if otp_retries_exhausted():
+                return
+            return await run_ingestion_task(force=True, _otp_attempt=_otp_attempt + 1)
 
-        config_manager.update_status("Running Automation...", message="Requesting new export...")
+        config_manager.update_status(
+            "Running Automation...",
+            message=(
+                "The export on Oura had no new days. Requesting a fresh export…"
+                if skip_ready_download
+                else "Requesting new export..."
+            ),
+        )
         result = await automator.request_new_export_and_download(
             save_dir=save_dir,
+            skip_ready_download=skip_ready_download,
             wait_for_ready=False,
         )
 
         if isinstance(result, dict) and result.get("status") == "otp_required":
-            waiting_for_otp = not await _resolve_otp_or_pause(result)
+            waiting_for_otp = not await resolve_otp_or_pause(
+                result,
+                automator_instance=automator,
+            )
             if waiting_for_otp:
                 logger.info("Background worker paused: OTP required.")
                 return
-            return await run_ingestion_task(force=True)
+            if otp_retries_exhausted():
+                return
+            return await run_ingestion_task(force=True, _otp_attempt=_otp_attempt + 1)
 
         if isinstance(result, str) and result:
             append_activity("Downloaded an existing ready export.", level="success", category="export")
@@ -612,22 +612,30 @@ async def run_ingestion_task(force=False):
                 pass
 
 
-async def process_ingestion(zip_path):
+async def process_ingestion(zip_path) -> bool | None:
+    """Ingest a downloaded ZIP.
+
+    Returns ``True`` when the newest local Oura day moved forward, ``False``
+    when the export contained nothing newer, and ``None`` when the ingest
+    itself failed (already reported to the user).
+    """
     from backend.src.ingestion.runner import ingest_zip_async
 
     logger.info(f"Background worker: Downloaded to {zip_path}")
     config_manager.update_status("Ingesting...", message="Ingesting downloaded export…")
     append_activity("Ingesting downloaded export…", category="ingest")
     try:
-        await ingest_zip_async(
+        advanced = await ingest_zip_async(
             zip_path,
             success_message="Sync completed successfully.",
         )
         logger.info("Background worker: Ingestion successful.")
         append_activity("Ingest completed successfully.", level="success", category="ingest")
+        return advanced
     except Exception as e:
         logger.error(f"Background worker: Ingestion failed: {e}")
         append_activity(f"Ingest failed: {e}", level="error", category="ingest")
+        return None
 
 
 async def background_worker():

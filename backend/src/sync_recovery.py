@@ -31,7 +31,7 @@ def mark_status_started() -> None:
 
 
 def clear_status_started() -> None:
-    config_manager.update_config(status_started_at=None)
+    config_manager.clear_config_values("status_started_at")
 
 
 def recover_stuck_sync_if_needed(cfg: Dict[str, Any] | None = None) -> bool:

@@ -17,7 +17,7 @@ def mark_otp_requested() -> None:
 
 
 def clear_otp_request() -> None:
-    config_manager.update_config(otp_requested_at=None)
+    config_manager.clear_config_values("otp_requested_at")
 
 
 def otp_status_fields(cfg: dict[str, Any]) -> dict[str, Any]:

@@ -48,6 +48,11 @@ DEFAULT_CONFIG = {
     "auto_otp_timeout_seconds": 120,
     "auto_otp_live_mailbox_enabled": True,
     "auto_otp_mailbox_api_url": "http://127.0.0.1:8766",
+    # Betterbird is optional. When live mailbox mode is enabled, launch it
+    # through PATH/standard install locations if it is not already running.
+    "auto_otp_betterbird_launch_enabled": True,
+    "auto_otp_betterbird_executable": "",
+    "auto_otp_betterbird_startup_wait_seconds": 60,
     "incremental_ingest_enabled": True,
     "incremental_reprocess_window_days": 3,
 }
@@ -163,6 +168,22 @@ class ConfigManager:
             if dash_changed:
                 self._save_file(self.dashboard_path, dash_conf)
 
+    def clear_config_values(self, *keys: str):
+        """Explicitly null out keys.
+
+        ``update_config`` treats ``None`` as "leave unchanged" so optional
+        request fields do not wipe settings, so clearing needs its own path.
+        """
+        with self._lock:
+            main_conf = self._load_file(self.config_path)
+            changed = False
+            for key in keys:
+                if main_conf.get(key) is not None:
+                    main_conf[key] = None
+                    changed = True
+            if changed:
+                self._save_file(self.config_path, main_conf)
+
     def update_status(self, status: str, **kwargs):
         """
         Helper to update status specific fields in the main config.
@@ -181,7 +202,10 @@ class ConfigManager:
             )
         elif status in ("Idle", WAITING_FOR_EXPORT_STATUS):
             kwargs.setdefault("status_started_at", None)
+        clear_keys = [key for key, value in kwargs.items() if value is None]
         self.update_config(status=status, **kwargs)
+        if clear_keys:
+            self.clear_config_values(*clear_keys)
 
         # Only log when status or message actually changed for the user.
         new_message = kwargs["message"] if "message" in kwargs else previous_message

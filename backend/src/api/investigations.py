@@ -6,7 +6,7 @@ import uuid
 from datetime import datetime
 from typing import Any, Dict, List, Optional
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Response
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
@@ -104,11 +104,13 @@ def update_investigation(
     return _to_response(inv)
 
 
-@router.delete("/{investigation_id}", status_code=204)
-def delete_investigation(investigation_id: str, db: Session = Depends(get_db)) -> None:
+@router.delete("/{investigation_id}", status_code=204, response_class=Response)
+def delete_investigation(investigation_id: str, db: Session = Depends(get_db)) -> Response:
+    # Annotate the Response return type so FastAPI does not infer a response
+    # model for a 204, which it rejects at import time.
     inv = db.get(SavedInvestigation, investigation_id)
     if inv is None:
         raise HTTPException(status_code=404, detail="investigation not found")
     db.delete(inv)
     db.commit()
-    return None
+    return Response(status_code=204)

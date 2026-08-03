@@ -51,6 +51,7 @@ def test_wait_for_configured_otp_uses_matching_fresh_code(monkeypatch, tmp_path:
 
 def test_live_mailbox_otp_uses_current_betterbird_message(monkeypatch):
     calls = []
+    monkeypatch.setattr(auto_otp, "is_betterbird_running", lambda: True)
 
     def fake_rpc(_url, method, params, *, timeout_seconds):
         calls.append((method, params, timeout_seconds))
@@ -75,6 +76,7 @@ def test_live_mailbox_otp_uses_current_betterbird_message(monkeypatch):
             "email": "me@example.test",
             "otp_requested_at": "2026-07-12T09:15:00+00:00",
             "auto_otp_timeout_seconds": 120,
+            "auto_otp_betterbird_launch_enabled": False,
         }
     )
 
