@@ -46,6 +46,10 @@ struct OuracleClient {
         try await get("api/mobile/insights/\(day)")
     }
 
+    func sleepSessions(day: String) async throws -> [SleepSessionDetail] {
+        try await get("api/mobile/sleep/\(day)")
+    }
+
     private func get<T: Decodable>(
         _ path: String, query: [URLQueryItem] = []
     ) async throws -> T {

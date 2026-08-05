@@ -173,7 +173,59 @@ struct Workout: Codable, Equatable, Identifiable {
     }
 }
 
-struct DailySummary: Codable, Equatable, Identifiable {
+/// A sampled series as stored from Oura: sample interval in seconds plus
+/// values (nulls where the ring had no reading).
+struct SampledSeries: Codable, Equatable {
+    let interval: Double?
+    let items: [Double?]?
+    let timestamp: String?
+}
+
+struct SleepSessionDetail: Codable, Equatable, Identifiable {
+    let id: String
+    let day: String
+    let type: String?
+    let bedtimeStart: String?
+    let bedtimeEnd: String?
+    let efficiency: Int?
+    let latency: Int?
+    let totalSleepDuration: Int?
+    let deepSleepDuration: Int?
+    let remSleepDuration: Int?
+    let lightSleepDuration: Int?
+    let awakeTime: Int?
+    let timeInBed: Int?
+    let averageHeartRate: Double?
+    let averageHrv: Int?
+    let lowestHeartRate: Int?
+    let averageBreath: Double?
+    let restlessPeriods: Int?
+    let sleepPhase5Min: String?
+    let hrData: SampledSeries?
+    let hrvData: SampledSeries?
+
+    enum CodingKeys: String, CodingKey {
+        case id, day, type, efficiency, latency
+        case bedtimeStart = "bedtime_start"
+        case bedtimeEnd = "bedtime_end"
+        case totalSleepDuration = "total_sleep_duration"
+        case deepSleepDuration = "deep_sleep_duration"
+        case remSleepDuration = "rem_sleep_duration"
+        case lightSleepDuration = "light_sleep_duration"
+        case awakeTime = "awake_time"
+        case timeInBed = "time_in_bed"
+        case averageHeartRate = "average_heart_rate"
+        case averageHrv = "average_hrv"
+        case lowestHeartRate = "lowest_heart_rate"
+        case averageBreath = "average_breath"
+        case restlessPeriods = "restless_periods"
+        case sleepPhase5Min = "sleep_phase_5_min"
+        case hrData = "hr_data"
+        case hrvData = "hrv_data"
+    }
+}
+
+struct DailySummary: Codable, Hashable, Identifiable {
     let day: String
     let sleepScore: Int?
     let sleepContributors: [String: Double?]?

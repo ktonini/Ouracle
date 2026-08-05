@@ -19,6 +19,8 @@ struct RootView: View {
         TabView {
             TodayView()
                 .tabItem { Label("Today", systemImage: "sun.max") }
+            TrendsView()
+                .tabItem { Label("Trends", systemImage: "chart.xyaxis.line") }
             HistoryView()
                 .tabItem { Label("History", systemImage: "calendar") }
             SettingsView()

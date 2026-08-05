@@ -720,6 +720,79 @@ def update_mobile_settings(
     return get_mobile_settings(db)
 
 
+class MobileSleepSessionDetail(BaseModel):
+    """Full per-session sleep detail for the day view: stage sequence plus
+    overnight HR/HRV series (``{interval, items, timestamp}`` dicts)."""
+
+    id: str
+    day: date
+    type: Optional[str] = None
+    bedtime_start: Optional[datetime] = None
+    bedtime_end: Optional[datetime] = None
+    efficiency: Optional[int] = None
+    latency: Optional[int] = None
+    total_sleep_duration: Optional[int] = None
+    deep_sleep_duration: Optional[int] = None
+    rem_sleep_duration: Optional[int] = None
+    light_sleep_duration: Optional[int] = None
+    awake_time: Optional[int] = None
+    time_in_bed: Optional[int] = None
+    average_heart_rate: Optional[float] = None
+    average_hrv: Optional[int] = None
+    lowest_heart_rate: Optional[int] = None
+    average_breath: Optional[float] = None
+    restless_periods: Optional[int] = None
+    sleep_phase_5_min: Optional[str] = None
+    hr_data: Optional[Dict[str, Any]] = None
+    hrv_data: Optional[Dict[str, Any]] = None
+
+
+@mobile_client_router.get(
+    "/api/mobile/sleep/{day}", response_model=List[MobileSleepSessionDetail]
+)
+def mobile_sleep_sessions(
+    day: date,
+    _: Dict[str, Any] = Depends(_require_mobile_token),
+    db: Session = Depends(get_db),
+):
+    sessions = (
+        db.query(SleepSession)
+        .filter(SleepSession.day == day)
+        .order_by(SleepSession.bedtime_start)
+        .all()
+    )
+    return [
+        MobileSleepSessionDetail(
+            id=s.id,
+            day=s.day,
+            type=s.type,
+            bedtime_start=s.bedtime_start,
+            bedtime_end=s.bedtime_end,
+            efficiency=s.efficiency,
+            latency=s.latency,
+            total_sleep_duration=s.total_sleep_duration,
+            deep_sleep_duration=s.deep_sleep_duration,
+            rem_sleep_duration=s.rem_sleep_duration,
+            light_sleep_duration=s.light_sleep_duration,
+            awake_time=s.awake_time,
+            time_in_bed=s.time_in_bed,
+            average_heart_rate=s.average_heart_rate,
+            average_hrv=s.average_hrv,
+            lowest_heart_rate=s.lowest_heart_rate,
+            average_breath=s.average_breath,
+            restless_periods=s.restless_periods,
+            sleep_phase_5_min=(
+                s.sleep_phase_5_min
+                if isinstance(s.sleep_phase_5_min, str)
+                else None
+            ),
+            hr_data=s.hr_data if isinstance(s.hr_data, dict) else None,
+            hrv_data=s.hrv_data if isinstance(s.hrv_data, dict) else None,
+        )
+        for s in sessions
+    ]
+
+
 @mobile_client_router.get("/api/mobile/ping", response_model=MobileServerStatusResponse)
 def mobile_ping(
     _: Dict[str, Any] = Depends(_require_mobile_token),

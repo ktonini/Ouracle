@@ -6,15 +6,20 @@ struct HistoryView: View {
     var body: some View {
         NavigationStack {
             List((store.sync?.days ?? []).reversed()) { day in
-                HStack {
-                    Text(shortDay(day.day))
-                        .frame(width: 92, alignment: .leading)
-                    Spacer()
-                    scorePill(day.sleepScore, "moon.fill")
-                    scorePill(day.readinessScore, "bolt.fill")
-                    scorePill(day.activityScore, "flame.fill")
+                NavigationLink(value: day) {
+                    HStack {
+                        Text(shortDay(day.day))
+                            .frame(width: 92, alignment: .leading)
+                        Spacer()
+                        scorePill(day.sleepScore, "moon.fill")
+                        scorePill(day.readinessScore, "bolt.fill")
+                        scorePill(day.activityScore, "flame.fill")
+                    }
+                    .font(.subheadline)
                 }
-                .font(.subheadline)
+            }
+            .navigationDestination(for: DailySummary.self) { day in
+                DayDetailView(day: day)
             }
             .navigationTitle("History")
             .overlay {
