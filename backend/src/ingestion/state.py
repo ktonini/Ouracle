@@ -9,7 +9,12 @@ from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional, Type
 
-import pandas as pd
+# pandas is only needed by the CSV-export ingest path; the slim server image
+# (requirements-server.txt) runs without it.
+try:
+    import pandas as pd
+except ImportError:  # pragma: no cover - exercised by the server image
+    pd = None
 from sqlalchemy import func
 from sqlalchemy.orm import Session
 
@@ -29,7 +34,7 @@ def naive_utc(dt: Optional[datetime]) -> Optional[datetime]:
     """Normalize to naive UTC for SQLite DateTime columns and comparisons."""
     if dt is None:
         return None
-    if isinstance(dt, pd.Timestamp):
+    if pd is not None and isinstance(dt, pd.Timestamp):
         dt = dt.to_pydatetime()
     if dt.tzinfo is not None:
         return dt.astimezone(timezone.utc).replace(tzinfo=None)
