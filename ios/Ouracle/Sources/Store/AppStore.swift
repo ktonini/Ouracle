@@ -13,7 +13,13 @@ final class AppStore: ObservableObject {
     @Published var lastRefreshed: Date?
 
     init() {
-        token = Keychain.read(account: "api-token") ?? ""
+        // Env override for development (simulator launches, previews):
+        // SIMCTL_CHILD_OURACLE_TOKEN=... xcrun simctl launch ...
+        let env = ProcessInfo.processInfo.environment
+        token = env["OURACLE_TOKEN"] ?? Keychain.read(account: "api-token") ?? ""
+        if let url = env["OURACLE_URL"] {
+            serverURLString = url
+        }
     }
 
     var isConfigured: Bool {
