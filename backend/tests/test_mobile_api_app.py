@@ -8,22 +8,30 @@ from fastapi.testclient import TestClient
 
 @pytest.fixture
 def mobile_api_client(monkeypatch):
-    monkeypatch.setenv("CRACKED_OURA_MOBILE_API_ONLY", "1")
-    monkeypatch.setenv("CRACKED_OURA_DISABLE_MOBILE_AUTOSTART", "1")
+    monkeypatch.setenv("OURACLE_MOBILE_API_ONLY", "1")
+    monkeypatch.setenv("OURACLE_DISABLE_MOBILE_AUTOSTART", "1")
     from backend.src.mobile_api_app import create_mobile_api_app
 
     return TestClient(create_mobile_api_app())
 
 
+def _openapi_paths(client) -> set:
+    # Route objects vary across Starlette versions (included routers may be
+    # wrapped and lack .path); the OpenAPI schema is a stable, complete view.
+    response = client.get("/openapi.json")
+    assert response.status_code == 200
+    return set(response.json()["paths"])
+
+
 def test_mobile_api_exposes_sync_routes(mobile_api_client):
-    routes = {route.path for route in mobile_api_client.app.routes}
+    routes = _openapi_paths(mobile_api_client)
     assert "/api/mobile/ping" in routes
     assert "/api/mobile/sync" in routes
     assert "/api/mobile/insights/{day}" in routes
 
 
 def test_mobile_api_does_not_expose_desktop_automation(mobile_api_client):
-    paths = {getattr(route, "path", "") for route in mobile_api_client.app.routes}
+    paths = _openapi_paths(mobile_api_client)
     assert "/api/automation/status" not in paths
     assert "/api/mobile/settings" not in paths
 

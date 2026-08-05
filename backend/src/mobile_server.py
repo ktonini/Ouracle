@@ -7,8 +7,8 @@ from backend.src.mobile_api_app import app
 from backend.src.config import config_manager
 
 # Mark this process so mobile routes never start Oura automation or spawn subprocesses.
-os.environ.setdefault("CRACKED_OURA_MOBILE_API_ONLY", "1")
-os.environ.setdefault("CRACKED_OURA_DISABLE_MOBILE_AUTOSTART", "1")
+os.environ.setdefault("OURACLE_MOBILE_API_ONLY", "1")
+os.environ.setdefault("OURACLE_DISABLE_MOBILE_AUTOSTART", "1")
 
 
 def main():
@@ -20,7 +20,7 @@ def main():
     parser.add_argument(
         "--host",
         default=os.environ.get(
-            "CRACKED_OURA_MOBILE_HOST",
+            "OURACLE_MOBILE_HOST",
             config.get("mobile_sync_bind_host", "0.0.0.0"),
         ),
         help="Interface to bind to. Use 0.0.0.0 for LAN/Tailscale access.",
@@ -30,7 +30,7 @@ def main():
         type=int,
         default=int(
             os.environ.get(
-                "CRACKED_OURA_MOBILE_PORT",
+                "OURACLE_MOBILE_PORT",
                 config.get("mobile_sync_port", 8037),
             )
         ),

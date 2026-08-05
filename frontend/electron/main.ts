@@ -259,7 +259,7 @@ function createWindow() {
 
     const devUrl = 'http://localhost:5188';
     // Production UI is served by the bundled backend on port 8000 (same origin for /api/*).
-    const prodUrl = process.env.CRACKED_OURA_UI_URL || 'http://127.0.0.1:8000/';
+    const prodUrl = process.env.OURACLE_UI_URL || 'http://127.0.0.1:8000/';
 
     if (isDev) {
         logToDesktop(`Loading DEV URL: ${devUrl}`);

@@ -130,7 +130,7 @@ async def lifespan(app: FastAPI):
         
     # Start background worker
     task = asyncio.create_task(background_worker())
-    if os.environ.get("CRACKED_OURA_DISABLE_MOBILE_AUTOSTART") != "1":
+    if os.environ.get("OURACLE_DISABLE_MOBILE_AUTOSTART") != "1":
         try:
             mobile_server_manager.reconcile()
         except Exception:
@@ -644,7 +644,7 @@ async def background_worker():
         try:
             now = datetime.now()
             cfg = config_manager.get_config()
-            if os.environ.get("CRACKED_OURA_DISABLE_MOBILE_AUTOSTART") != "1":
+            if os.environ.get("OURACLE_DISABLE_MOBILE_AUTOSTART") != "1":
                 try:
                     mobile_server_manager.reconcile()
                 except Exception:
@@ -684,7 +684,7 @@ if __name__ == "__main__":
     import sys
     import traceback
 
-    if os.environ.get("CRACKED_OURA_MOBILE_API_ONLY") == "1":
+    if os.environ.get("OURACLE_MOBILE_API_ONLY") == "1":
         from backend.src.mobile_server import main as mobile_server_main
         mobile_server_main()
         raise SystemExit(0)

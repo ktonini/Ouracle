@@ -1,0 +1,31 @@
+# Headless read-only API server for Ouracle.
+# Build from the repository root:
+#   podman build -t ouracle -f deploy/Containerfile .
+FROM registry.access.redhat.com/ubi9/python-312:latest
+
+# The backend uses absolute imports rooted at the repo ("backend.src.*"),
+# so the app dir must contain the backend/ package and sit on PYTHONPATH.
+ENV APP_HOME=/opt/app-root/src \
+    PYTHONPATH=/opt/app-root/src \
+    PYTHONUNBUFFERED=1 \
+    OURACLE_DATA_DIR=/data \
+    OURACLE_MOBILE_API_ONLY=1 \
+    OURACLE_DISABLE_MOBILE_AUTOSTART=1
+
+WORKDIR ${APP_HOME}
+
+COPY backend/requirements-server.txt ./backend/requirements-server.txt
+RUN pip install --no-cache-dir -r backend/requirements-server.txt
+
+COPY backend/__init__.py ./backend/__init__.py
+COPY backend/src ./backend/src
+
+# UBI python images run as non-root uid 1001; /data is a mounted volume.
+VOLUME ["/data"]
+EXPOSE 8037
+
+# Token-authenticated healthcheck via stdlib (no curl dependency).
+HEALTHCHECK --interval=60s --timeout=5s --start-period=15s --retries=3 \
+    CMD python -c "import os,urllib.request as u; r=u.Request('http://127.0.0.1:'+os.environ.get('OURACLE_MOBILE_PORT','8037')+'/api/mobile/ping', headers={'X-Cracked-Oura-Token': os.environ.get('OURACLE_MOBILE_TOKEN','')}); u.urlopen(r, timeout=4)"
+
+CMD ["python", "-m", "backend.src.mobile_server"]

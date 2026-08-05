@@ -1,0 +1,37 @@
+# Podman Quadlet unit for the Ouracle read-only API server.
+#
+# Rootless install (recommended):
+#   mkdir -p ~/.config/containers/systemd
+#   cp deploy/ouracle.container ~/.config/containers/systemd/
+#   mkdir -p ~/.config/ouracle
+#   cp deploy/env.example ~/.config/ouracle/env   # then edit: set the token
+#   systemctl --user daemon-reload
+#   systemctl --user start ouracle
+#   loginctl enable-linger $USER   # keep it running after logout
+#
+# Rootful: use /etc/containers/systemd/ and /etc/ouracle/env instead,
+# and adjust EnvironmentFile= below.
+
+[Unit]
+Description=Ouracle read-only API server
+Wants=network-online.target
+After=network-online.target
+
+[Container]
+Image=localhost/ouracle:latest
+ContainerName=ouracle
+EnvironmentFile=%h/.config/ouracle/env
+Volume=ouracle-data:/data:Z
+PublishPort=8037:8037
+# Drop what the process doesn't need.
+NoNewPrivileges=true
+ReadOnly=true
+ReadOnlyTmpfs=true
+
+[Service]
+Restart=on-failure
+RestartSec=10
+TimeoutStartSec=120
+
+[Install]
+WantedBy=default.target

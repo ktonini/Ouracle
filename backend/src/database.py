@@ -27,11 +27,17 @@ try:
     os.remove(test_file)
 
 except Exception as e:
-    # CRITICAL: Write crash report to Documents
-    crash_file = os.path.expanduser("~/Documents/cracked_oura_backend_crash.txt")
-    with open(crash_file, "w", encoding="utf-8") as f:
-        f.write(f"Database Config CRASH: {e}\n")
-        f.write(traceback.format_exc())
+    # CRITICAL: always log to stderr (containers/headless), then try to leave
+    # a crash report in Documents for desktop users. The report is best-effort;
+    # a failure to write it must not mask the original error.
+    logger.critical("Database Config CRASH: %s\n%s", e, traceback.format_exc())
+    try:
+        crash_file = os.path.expanduser("~/Documents/cracked_oura_backend_crash.txt")
+        with open(crash_file, "w", encoding="utf-8") as f:
+            f.write(f"Database Config CRASH: {e}\n")
+            f.write(traceback.format_exc())
+    except OSError:
+        pass
     sys.exit(1)
 
 # --- SQLAlchemy Setup ---

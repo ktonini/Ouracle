@@ -238,9 +238,24 @@ class MobileSyncResponse(BaseModel):
 
 def _mobile_settings() -> Dict[str, Any]:
     config = config_manager.get_config()
+
+    # Headless/container deployments seed auth via environment instead of the
+    # desktop settings UI. Env vars take precedence over the config file.
+    env_token = os.environ.get("OURACLE_MOBILE_TOKEN", "").strip()
+    env_enabled = os.environ.get("OURACLE_MOBILE_ENABLED", "").strip().lower()
+
+    enabled = bool(config.get("mobile_sync_enabled", False))
+    if env_enabled in ("1", "true", "yes", "on"):
+        enabled = True
+    elif env_enabled in ("0", "false", "no", "off"):
+        enabled = False
+    elif env_token:
+        # A token provided via env implies the operator wants the API on.
+        enabled = True
+
     return {
-        "enabled": bool(config.get("mobile_sync_enabled", False)),
-        "token": config.get("mobile_sync_token", "") or "",
+        "enabled": enabled,
+        "token": env_token or config.get("mobile_sync_token", "") or "",
         "default_window_days": int(
             config.get("mobile_sync_default_window_days", DEFAULT_WINDOW_DAYS)
         ),
@@ -610,7 +625,7 @@ def _build_today_insights(db: Session, day: Optional[date]) -> Optional[MobileTo
 
 def _build_mobile_sync_freshness(db: Session) -> MobileSyncFreshness:
     """Report desktop ingest/sync state for the phone without starting Oura automation."""
-    if os.environ.get("CRACKED_OURA_MOBILE_API_ONLY") == "1":
+    if os.environ.get("OURACLE_MOBILE_API_ONLY") == "1":
         fresh = build_sync_freshness(db, mobile_server_state=None)
         payload = fresh.to_dict()
         cfg = config_manager.get_config()
