@@ -8,7 +8,7 @@ options:
 settings:
   base:
     SWIFT_VERSION: "5.9"
-    MARKETING_VERSION: "0.1.0"
+    MARKETING_VERSION: "0.2.0"
     CURRENT_PROJECT_VERSION: "1"
 
 targets:
@@ -17,6 +17,14 @@ targets:
     platform: iOS
     sources:
       - Ouracle/Sources
+      - Ouracle/Resources
+    dependencies:
+      - target: OuracleWidget
+    entitlements:
+      path: Ouracle/Ouracle.entitlements
+      properties:
+        com.apple.security.application-groups:
+          - group.com.ktonini.ouracle
     settings:
       base:
         GENERATE_INFOPLIST_FILE: YES
@@ -24,8 +32,34 @@ targets:
         INFOPLIST_KEY_UISupportedInterfaceOrientations: UIInterfaceOrientationPortrait
         INFOPLIST_KEY_CFBundleDisplayName: Ouracle
         PRODUCT_BUNDLE_IDENTIFIER: com.ktonini.ouracle
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
         # Set your Apple ID team in Xcode (Signing & Capabilities) to deploy
         # to a device; simulator builds need no signing.
+        CODE_SIGN_STYLE: Automatic
+
+  OuracleWidget:
+    type: app-extension
+    platform: iOS
+    sources:
+      - OuracleWidget
+      - Ouracle/Sources/Models/SyncModels.swift
+      - Ouracle/Sources/API/OuracleClient.swift
+      - Ouracle/Sources/Support/Keychain.swift
+      - Ouracle/Sources/Support/SharedStore.swift
+    entitlements:
+      path: OuracleWidget/OuracleWidget.entitlements
+      properties:
+        com.apple.security.application-groups:
+          - group.com.ktonini.ouracle
+    info:
+      path: OuracleWidget/Info.plist
+      properties:
+        CFBundleDisplayName: Ouracle Scores
+        NSExtension:
+          NSExtensionPointIdentifier: com.apple.widgetkit-extension
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.ktonini.ouracle.widget
         CODE_SIGN_STYLE: Automatic
 
   OuracleTests:

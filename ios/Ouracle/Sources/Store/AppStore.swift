@@ -2,6 +2,7 @@
 
 import Foundation
 import SwiftUI
+import WidgetKit
 
 @MainActor
 final class AppStore: ObservableObject {
@@ -50,10 +51,28 @@ final class AppStore: ObservableObject {
         do {
             sync = try await client.sync(windowDays: windowDays)
             lastRefreshed = Date()
+            publishWidgetSnapshot()
         } catch {
             lastError = error.localizedDescription
         }
         isLoading = false
+    }
+
+    /// Hands the widget its config and latest scores, then asks WidgetKit
+    /// to redraw.
+    private func publishWidgetSnapshot() {
+        SharedStore.save(serverURL: serverURLString)
+        if let day = today {
+            SharedStore.save(snapshot: .init(
+                day: day.day,
+                sleep: day.sleepScore,
+                readiness: day.readinessScore,
+                activity: day.activityScore,
+                steps: day.steps,
+                updatedAt: Date()
+            ))
+        }
+        WidgetCenter.shared.reloadAllTimelines()
     }
 
     /// Settings-screen connection check; returns a human-readable outcome.
