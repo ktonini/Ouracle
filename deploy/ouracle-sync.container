@@ -20,6 +20,9 @@
 Description=Ouracle Oura API v2 sync (one-shot)
 Wants=network-online.target
 After=network-online.target
+# Optional: notify on failure (unit must exist in ~/.config/systemd/user/;
+# see deploy/README.md). Remove if you have no notifier.
+OnFailure=ouracle-alert.service
 
 [Container]
 Image=localhost/ouracle:latest

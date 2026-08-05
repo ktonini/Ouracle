@@ -116,6 +116,15 @@ desktop app's data dir and restart the container:
 cp /path/to/oura_database.db "$(podman volume inspect ouracle-data --format '{{.Mountpoint}}')/"
 ```
 
+## Backups & alerting
+
+- `~/pods/ouracle/backup.sh` (cron, daily at noon): consistent SQLite
+  snapshot via the container's Python into `data/backups/`, plus the env
+  file; keeps 14 days.
+- `ouracle-sync.container` has `OnFailure=ouracle-alert.service` — a oneshot
+  user unit that sends a Pushover notification. Create it (or remove the
+  OnFailure line) to match your notifier.
+
 ## Notes
 
 - Container runs as non-root (uid 1001), read-only rootfs, `NoNewPrivileges`.

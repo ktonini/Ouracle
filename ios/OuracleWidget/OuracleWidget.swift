@@ -10,6 +10,31 @@ import WidgetKit
 struct OuracleWidgetBundle: WidgetBundle {
     var body: some Widget {
         ScoresWidget()
+        SleepRingWidget()
+        ReadinessRingWidget()
+        ActivityRingWidget()
+    }
+}
+
+enum RingMetric: String {
+    case sleep = "Sleep"
+    case readiness = "Readiness"
+    case activity = "Activity"
+
+    func score(in snapshot: SharedStore.Snapshot?) -> Int? {
+        switch self {
+        case .sleep: return snapshot?.sleep
+        case .readiness: return snapshot?.readiness
+        case .activity: return snapshot?.activity
+        }
+    }
+
+    var symbol: String {
+        switch self {
+        case .sleep: return "moon.fill"
+        case .readiness: return "bolt.fill"
+        case .activity: return "flame.fill"
+        }
     }
 }
 
@@ -91,6 +116,74 @@ struct ScoresWidget: Widget {
         .configurationDisplayName("Scores")
         .description("Today's sleep, readiness, and activity rings.")
         .supportedFamilies([.systemSmall, .systemMedium])
+    }
+}
+
+/// Lock Screen / StandBy accessory widgets: one metric as a circular gauge
+/// (or inline text). Registered as three kinds so each metric is added
+/// independently from the widget gallery. (Widget requires init(), so each
+/// kind is its own thin struct over a shared configuration builder.)
+private func metricRingConfiguration(
+    kind: String, metric: RingMetric
+) -> some WidgetConfiguration {
+    StaticConfiguration(kind: kind, provider: ScoresProvider()) { entry in
+        MetricAccessoryView(metric: metric, entry: entry)
+            .containerBackground(for: .widget) { Color.clear }
+    }
+    .configurationDisplayName("\(metric.rawValue) Ring")
+    .description("Today's \(metric.rawValue.lowercased()) score.")
+    .supportedFamilies([.accessoryCircular, .accessoryInline])
+}
+
+struct SleepRingWidget: Widget {
+    var body: some WidgetConfiguration {
+        metricRingConfiguration(kind: "OuracleSleepRing", metric: .sleep)
+    }
+}
+
+struct ReadinessRingWidget: Widget {
+    var body: some WidgetConfiguration {
+        metricRingConfiguration(kind: "OuracleReadinessRing", metric: .readiness)
+    }
+}
+
+struct ActivityRingWidget: Widget {
+    var body: some WidgetConfiguration {
+        metricRingConfiguration(kind: "OuracleActivityRing", metric: .activity)
+    }
+}
+
+struct MetricAccessoryView: View {
+    @Environment(\.widgetFamily) private var family
+    let metric: RingMetric
+    let entry: ScoresEntry
+
+    private var score: Int? { metric.score(in: entry.snapshot) }
+
+    var body: some View {
+        switch family {
+        case .accessoryInline:
+            // Inline gets one line; show all three so it stands alone.
+            if let snapshot = entry.snapshot {
+                Text(
+                    "Slp \(text(snapshot.sleep)) · Rdy \(text(snapshot.readiness)) · Act \(text(snapshot.activity))"
+                )
+            } else {
+                Text("Ouracle: no data")
+            }
+        default:
+            Gauge(value: Double(score ?? 0), in: 0...100) {
+                Image(systemName: metric.symbol)
+            } currentValueLabel: {
+                Text(score.map(String.init) ?? "–")
+                    .monospacedDigit()
+            }
+            .gaugeStyle(.accessoryCircular)
+        }
+    }
+
+    private func text(_ value: Int?) -> String {
+        value.map(String.init) ?? "–"
     }
 }
 
