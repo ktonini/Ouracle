@@ -60,6 +60,10 @@ targets:
       path: OuracleWidget/Info.plist
       properties:
         CFBundleDisplayName: Ouracle Scores
+        # Must match the containing app (ITMS-90473); reference the build
+        # settings instead of xcodegen's literal 1 / 1.0 defaults.
+        CFBundleVersion: $(CURRENT_PROJECT_VERSION)
+        CFBundleShortVersionString: $(MARKETING_VERSION)
         NSExtension:
           NSExtensionPointIdentifier: com.apple.widgetkit-extension
     settings:
