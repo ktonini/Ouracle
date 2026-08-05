@@ -47,15 +47,22 @@ final class AppStore: ObservableObject {
             lastError = OuracleError.notConfigured.localizedDescription
             return
         }
+        guard !isLoading else { return }
         isLoading = true
         lastError = nil
         do {
-            sync = try await client.sync(windowDays: windowDays)
+            // Unstructured Task: SwiftUI cancels .refreshable/.task closures
+            // on view updates, which would abort the URLSession request
+            // ("Network error: cancelled"). The inner task is immune, and
+            // awaiting .value is not a cancellation point.
+            sync = try await Task { try await client.sync(windowDays: windowDays) }.value
             lastRefreshed = Date()
             publishWidgetSnapshot()
             await exportToHealthIfEnabled()
         } catch {
-            lastError = error.localizedDescription
+            if !error.isCancellation {
+                lastError = error.localizedDescription
+            }
         }
         isLoading = false
     }

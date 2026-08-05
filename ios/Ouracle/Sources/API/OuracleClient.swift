@@ -2,6 +2,19 @@
 
 import Foundation
 
+extension Error {
+    /// Task/URLSession cancellation — never worth showing to the user.
+    var isCancellation: Bool {
+        if self is CancellationError { return true }
+        if let urlError = self as? URLError, urlError.code == .cancelled { return true }
+        if let ouracleError = self as? OuracleError,
+           case .network(let inner) = ouracleError {
+            return inner.isCancellation
+        }
+        return false
+    }
+}
+
 enum OuracleError: LocalizedError {
     case notConfigured
     case unauthorized
