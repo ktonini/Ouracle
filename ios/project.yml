@@ -10,6 +10,7 @@ settings:
     SWIFT_VERSION: "5.9"
     MARKETING_VERSION: "0.2.0"
     CURRENT_PROJECT_VERSION: "1"
+    DEVELOPMENT_TEAM: K3M2778TQN
 
 targets:
   Ouracle:
@@ -32,6 +33,7 @@ targets:
         INFOPLIST_KEY_UILaunchScreen_Generation: YES
         INFOPLIST_KEY_UISupportedInterfaceOrientations: UIInterfaceOrientationPortrait
         INFOPLIST_KEY_CFBundleDisplayName: Ouracle
+        TARGETED_DEVICE_FAMILY: "1"
         INFOPLIST_KEY_NSHealthShareUsageDescription: "Ouracle does not read Health data."
         INFOPLIST_KEY_NSHealthUpdateUsageDescription: "Ouracle writes your ring's sleep stages, HRV, and resting heart rate into Apple Health."
         PRODUCT_BUNDLE_IDENTIFIER: com.ktonini.ouracle
