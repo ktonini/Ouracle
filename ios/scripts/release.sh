@@ -7,9 +7,10 @@ set -euo pipefail
 
 cd "$(dirname "$0")/.."
 
-KEY_ID="Y9PQ9VX2S2"
-ISSUER_ID="90c08fce-2fe1-43bd-a8cc-83c076f3a78d"
-KEY_PATH="$HOME/.appstoreconnect/private_keys/AuthKey_${KEY_ID}.p8"
+# Overridable for CI (GitHub Actions passes these from repo secrets).
+KEY_ID="${KEY_ID:-Y9PQ9VX2S2}"
+ISSUER_ID="${ISSUER_ID:-90c08fce-2fe1-43bd-a8cc-83c076f3a78d}"
+KEY_PATH="${KEY_PATH:-$HOME/.appstoreconnect/private_keys/AuthKey_${KEY_ID}.p8}"
 
 # Build number = seconds-truncated epoch: monotonically increasing, no state.
 BUILD_NUMBER=$(( $(date +%s) / 60 ))
