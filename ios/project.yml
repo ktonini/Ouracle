@@ -25,12 +25,15 @@ targets:
       properties:
         com.apple.security.application-groups:
           - group.com.ktonini.ouracle
+        com.apple.developer.healthkit: true
     settings:
       base:
         GENERATE_INFOPLIST_FILE: YES
         INFOPLIST_KEY_UILaunchScreen_Generation: YES
         INFOPLIST_KEY_UISupportedInterfaceOrientations: UIInterfaceOrientationPortrait
         INFOPLIST_KEY_CFBundleDisplayName: Ouracle
+        INFOPLIST_KEY_NSHealthShareUsageDescription: "Ouracle does not read Health data."
+        INFOPLIST_KEY_NSHealthUpdateUsageDescription: "Ouracle writes your ring's sleep stages, HRV, and resting heart rate into Apple Health."
         PRODUCT_BUNDLE_IDENTIFIER: com.ktonini.ouracle
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
         # Set your Apple ID team in Xcode (Signing & Capabilities) to deploy

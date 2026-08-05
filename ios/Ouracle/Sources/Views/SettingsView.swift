@@ -54,6 +54,21 @@ struct SettingsView: View {
                     .disabled(urlDraft.isEmpty || tokenDraft.isEmpty)
                 }
 
+                Section("Apple Health") {
+                    Toggle(
+                        "Export sleep to Health",
+                        isOn: Binding(
+                            get: { store.healthExportEnabled },
+                            set: { enabled in
+                                Task { await store.setHealthExport(enabled: enabled) }
+                            }
+                        )
+                    )
+                    Text("Writes sleep stages, nightly HRV, and resting heart rate. Re-exports update rather than duplicate.")
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                }
+
                 if let refreshed = store.lastRefreshed {
                     Section {
                         LabeledContent(

@@ -7,6 +7,7 @@ import WidgetKit
 @MainActor
 final class AppStore: ObservableObject {
     @AppStorage("serverURL") var serverURLString: String = "https://oura.cmd.link"
+    @AppStorage("healthExportEnabled") var healthExportEnabled: Bool = false
     @Published var token: String
     @Published var sync: SyncResponse?
     @Published var isLoading = false
@@ -52,10 +53,42 @@ final class AppStore: ObservableObject {
             sync = try await client.sync(windowDays: windowDays)
             lastRefreshed = Date()
             publishWidgetSnapshot()
+            await exportToHealthIfEnabled()
         } catch {
             lastError = error.localizedDescription
         }
         isLoading = false
+    }
+
+    /// Pushes the latest day's sleep into Apple Health (idempotent via
+    /// sync identifiers). Failures are logged to lastError but don't block.
+    private func exportToHealthIfEnabled() async {
+        guard healthExportEnabled, HealthKitExporter.shared.isAvailable,
+              let client, let day = today
+        else { return }
+        do {
+            let sessions = try await client.sleepSessions(day: day.day)
+            guard !sessions.isEmpty else { return }
+            try await HealthKitExporter.shared.export(sessions: sessions, day: day)
+        } catch {
+            lastError = "Health export: \(error.localizedDescription)"
+        }
+    }
+
+    /// Settings toggle handler: request HealthKit authorization on enable.
+    func setHealthExport(enabled: Bool) async {
+        if enabled {
+            do {
+                try await HealthKitExporter.shared.requestAuthorization()
+                healthExportEnabled = true
+                await exportToHealthIfEnabled()
+            } catch {
+                healthExportEnabled = false
+                lastError = "Health access: \(error.localizedDescription)"
+            }
+        } else {
+            healthExportEnabled = false
+        }
     }
 
     /// Hands the widget its config and latest scores, then asks WidgetKit
