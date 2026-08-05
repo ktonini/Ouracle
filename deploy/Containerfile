@@ -19,13 +19,13 @@ RUN pip install --no-cache-dir -r backend/requirements-server.txt
 
 COPY backend/__init__.py ./backend/__init__.py
 COPY backend/src ./backend/src
+COPY deploy/healthcheck.py ./healthcheck.py
 
 # UBI python images run as non-root uid 1001; /data is a mounted volume.
 VOLUME ["/data"]
 EXPOSE 8037
 
-# Token-authenticated healthcheck via stdlib (no curl dependency).
-HEALTHCHECK --interval=60s --timeout=5s --start-period=15s --retries=3 \
-    CMD python -c "import os,urllib.request as u; r=u.Request('http://127.0.0.1:'+os.environ.get('OURACLE_MOBILE_PORT','8037')+'/api/mobile/ping', headers={'X-Cracked-Oura-Token': os.environ.get('OURACLE_MOBILE_TOKEN','')}); u.urlopen(r, timeout=4)"
+# Healthcheck lives in the quadlet (HealthCmd=) — podman's OCI image format
+# ignores Containerfile HEALTHCHECK directives.
 
 CMD ["python", "-m", "backend.src.mobile_server"]

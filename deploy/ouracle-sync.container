@@ -27,6 +27,8 @@ ContainerName=ouracle-sync
 EnvironmentFile=%h/.config/ouracle/env
 # Lowercase :z — the volume is shared with the ouracle API container.
 Volume=ouracle-data:/data:z
+# Match the API container's mapping so both write /data as the host user.
+UserNS=keep-id:uid=1001,gid=0
 Exec=python -m backend.src.oura_v2.sync
 NoNewPrivileges=true
 ReadOnly=true

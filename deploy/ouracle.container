@@ -24,10 +24,18 @@ EnvironmentFile=%h/.config/ouracle/env
 # Lowercase :z — the volume is shared with the ouracle-sync container.
 Volume=ouracle-data:/data:z
 PublishPort=8037:8037
+# The UBI image runs as uid 1001; map the host user onto it so bind-mounted
+# data stays owned by you.
+UserNS=keep-id:uid=1001,gid=0
 # Drop what the process doesn't need.
 NoNewPrivileges=true
 ReadOnly=true
 ReadOnlyTmpfs=true
+# Token-authenticated healthcheck (script avoids shell-quoting layers; the
+# Containerfile HEALTHCHECK is ignored by podman's OCI format).
+HealthCmd=python /opt/app-root/src/healthcheck.py
+HealthInterval=60s
+HealthStartPeriod=15s
 
 [Service]
 Restart=on-failure
