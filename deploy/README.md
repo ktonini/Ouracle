@@ -56,17 +56,41 @@ curl -H "Authorization: Bearer your-token" http://localhost:8037/api/mobile/ping
 Expect `{"status":"ok", ...}` with `latest_day: null` until data has been
 ingested into the volume's database.
 
-## Seeding data
+## Ingesting data (Oura API v2)
 
-Until the API v2 puller lands, copy an existing `oura_database.db` (from the
-desktop app's data dir) into the volume:
+The `backend.src.oura_v2` adapter pulls directly from Oura's API into the
+shared database. Set a credential in the env file:
 
 ```bash
-podman volume inspect ouracle-data --format '{{.Mountpoint}}'
-cp /path/to/oura_database.db "$(podman volume inspect ouracle-data --format '{{.Mountpoint}}')/"
+# Personal access token (simplest):
+OURACLE_OURA_TOKEN=...
+
+# Or OAuth2 (survives PAT deprecation; refresh token rotates automatically):
+OURACLE_OURA_CLIENT_ID=...
+OURACLE_OURA_CLIENT_SECRET=...
+OURACLE_OURA_REFRESH_TOKEN=...
 ```
 
-Restart the container afterwards.
+Then run a sync inside the container:
+
+```bash
+podman exec ouracle python -m backend.src.oura_v2.sync           # incremental
+podman exec ouracle python -m backend.src.oura_v2.sync --backfill-days 3650  # first run
+```
+
+Development without real credentials: add `--sandbox` to pull Oura's fake
+sandbox data. Exit code 2 means the credential is dead (401) — regenerate it.
+
+Known API v2 gaps vs. the desktop CSV export: no skin-temperature time series,
+and no per-day activity stress sequence (daily stress totals land on
+readiness instead).
+
+Alternatively, seed the volume with an existing `oura_database.db` from the
+desktop app's data dir and restart the container:
+
+```bash
+cp /path/to/oura_database.db "$(podman volume inspect ouracle-data --format '{{.Mountpoint}}')/"
+```
 
 ## Notes
 
