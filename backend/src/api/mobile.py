@@ -236,6 +236,20 @@ class MobileSyncResponse(BaseModel):
     sync_freshness: Optional[MobileSyncFreshness] = None
 
 
+def _device_tokens() -> Dict[str, str]:
+    """Named per-device tokens: OURACLE_MOBILE_TOKENS="ios-keith:abc,tv:xyz".
+
+    Each device gets its own revocable credential; remove one entry and only
+    that device loses access.
+    """
+    tokens: Dict[str, str] = {}
+    for part in os.environ.get("OURACLE_MOBILE_TOKENS", "").split(","):
+        name, sep, value = part.strip().partition(":")
+        if sep and name.strip() and value.strip():
+            tokens[name.strip()] = value.strip()
+    return tokens
+
+
 def _mobile_settings() -> Dict[str, Any]:
     config = config_manager.get_config()
 
@@ -243,18 +257,20 @@ def _mobile_settings() -> Dict[str, Any]:
     # desktop settings UI. Env vars take precedence over the config file.
     env_token = os.environ.get("OURACLE_MOBILE_TOKEN", "").strip()
     env_enabled = os.environ.get("OURACLE_MOBILE_ENABLED", "").strip().lower()
+    device_tokens = _device_tokens()
 
     enabled = bool(config.get("mobile_sync_enabled", False))
     if env_enabled in ("1", "true", "yes", "on"):
         enabled = True
     elif env_enabled in ("0", "false", "no", "off"):
         enabled = False
-    elif env_token:
+    elif env_token or device_tokens:
         # A token provided via env implies the operator wants the API on.
         enabled = True
 
     return {
         "enabled": enabled,
+        "device_tokens": device_tokens,
         "token": env_token or config.get("mobile_sync_token", "") or "",
         "default_window_days": int(
             config.get("mobile_sync_default_window_days", DEFAULT_WINDOW_DAYS)
@@ -388,18 +404,27 @@ def _require_mobile_token(
 ) -> Dict[str, Any]:
     settings = _mobile_settings()
 
-    if not settings["enabled"] or not settings["token"]:
+    valid_tokens = dict(settings["device_tokens"])
+    if settings["token"]:
+        valid_tokens.setdefault("shared", settings["token"])
+
+    if not settings["enabled"] or not valid_tokens:
         raise HTTPException(
             status_code=503,
             detail="Mobile sync is not enabled. Configure a sync token on the desktop app first.",
         )
 
     provided_token = _parse_token(authorization, x_cracked_oura_token)
-    if not provided_token or not secrets.compare_digest(
-        provided_token, settings["token"]
-    ):
+    matched = None
+    if provided_token:
+        for name, token in valid_tokens.items():
+            if secrets.compare_digest(provided_token, token):
+                matched = name
+                break
+    if matched is None:
         raise HTTPException(status_code=401, detail="Invalid mobile sync token.")
 
+    logger.debug("Mobile API request authenticated as device %r", matched)
     return settings
 
 
