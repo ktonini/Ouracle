@@ -71,15 +71,39 @@ OURACLE_OURA_CLIENT_SECRET=...
 OURACLE_OURA_REFRESH_TOKEN=...
 ```
 
-Then run a sync inside the container:
+### Scheduled daily sync
+
+`ouracle-sync.container` is a one-shot quadlet sharing the image, volume, and
+env file with the API server (so it works even when the server is down);
+`ouracle-sync.timer` fires it daily at 10:30 (±15 min, catches up missed runs):
 
 ```bash
-podman exec ouracle python -m backend.src.oura_v2.sync           # incremental
-podman exec ouracle python -m backend.src.oura_v2.sync --backfill-days 3650  # first run
+cp deploy/ouracle-sync.container ~/.config/containers/systemd/
+cp deploy/ouracle-sync.timer     ~/.config/systemd/user/
+systemctl --user daemon-reload
+systemctl --user enable --now ouracle-sync.timer
 ```
 
-Development without real credentials: add `--sandbox` to pull Oura's fake
-sandbox data. Exit code 2 means the credential is dead (401) — regenerate it.
+The first run automatically backfills `OURACLE_SYNC_BACKFILL_DAYS` (default 10
+years); afterwards runs are incremental from per-collection watermarks with a
+`OURACLE_SYNC_OVERLAP_DAYS` re-fetch window for Oura's rescoring of recent days.
+
+```bash
+systemctl --user start ouracle-sync.service    # manual run / first backfill now
+systemctl --user list-timers ouracle-sync.timer
+journalctl --user -u ouracle-sync.service      # sync logs
+```
+
+Ad-hoc runs also work through the API container:
+
+```bash
+podman exec ouracle python -m backend.src.oura_v2.sync --collections daily_sleep
+```
+
+Development without real credentials: `--sandbox` (or `OURACLE_OURA_SANDBOX=1`)
+pulls Oura's fake sandbox data. Exit code 2 means the credential is dead
+(401) — regenerate it; check `journalctl` since a failed unit stays visible in
+`systemctl --user --failed`.
 
 Known API v2 gaps vs. the desktop CSV export: no skin-temperature time series,
 and no per-day activity stress sequence (daily stress totals land on

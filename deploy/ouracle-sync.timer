@@ -1,0 +1,22 @@
+# Daily trigger for ouracle-sync.service (generated from ouracle-sync.container).
+#
+# Goes in ~/.config/systemd/user/ (plain systemd unit, not a quadlet):
+#   cp deploy/ouracle-sync.timer ~/.config/systemd/user/
+#   systemctl --user daemon-reload
+#   systemctl --user enable --now ouracle-sync.timer
+# Inspect schedule:
+#   systemctl --user list-timers ouracle-sync.timer
+
+[Unit]
+Description=Daily Ouracle Oura API v2 sync
+
+[Timer]
+# Oura finishes scoring a night well after wake; late morning is a good slot.
+OnCalendar=*-*-* 10:30:00
+# Spread load / avoid thundering-herd API timing; also catch up missed runs
+# (machine asleep or powered off at trigger time).
+RandomizedDelaySec=15m
+Persistent=true
+
+[Install]
+WantedBy=timers.target

@@ -21,7 +21,8 @@ After=network-online.target
 Image=localhost/ouracle:latest
 ContainerName=ouracle
 EnvironmentFile=%h/.config/ouracle/env
-Volume=ouracle-data:/data:Z
+# Lowercase :z — the volume is shared with the ouracle-sync container.
+Volume=ouracle-data:/data:z
 PublishPort=8037:8037
 # Drop what the process doesn't need.
 NoNewPrivileges=true

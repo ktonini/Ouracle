@@ -249,9 +249,21 @@ def run_sync(
 
 
 def main(argv: Optional[List[str]] = None) -> int:
+    import os
+
     parser = argparse.ArgumentParser(description="Sync Oura API v2 data into Ouracle.")
-    parser.add_argument("--backfill-days", type=int, default=DEFAULT_BACKFILL_DAYS)
-    parser.add_argument("--overlap-days", type=int, default=DEFAULT_OVERLAP_DAYS)
+    # Env defaults let scheduled runs (fixed Exec= in the systemd unit) be
+    # tuned from the environment file instead of editing unit files.
+    parser.add_argument(
+        "--backfill-days",
+        type=int,
+        default=int(os.environ.get("OURACLE_SYNC_BACKFILL_DAYS", DEFAULT_BACKFILL_DAYS)),
+    )
+    parser.add_argument(
+        "--overlap-days",
+        type=int,
+        default=int(os.environ.get("OURACLE_SYNC_OVERLAP_DAYS", DEFAULT_OVERLAP_DAYS)),
+    )
     parser.add_argument(
         "--collections",
         nargs="*",
@@ -260,7 +272,9 @@ def main(argv: Optional[List[str]] = None) -> int:
     parser.add_argument(
         "--sandbox",
         action="store_true",
-        help="Use Oura's sandbox endpoints (fake data, any token accepted).",
+        default=os.environ.get("OURACLE_OURA_SANDBOX", "") in ("1", "true"),
+        help="Use Oura's sandbox endpoints (fake data, any token accepted). "
+        "Also enabled by OURACLE_OURA_SANDBOX=1.",
     )
     args = parser.parse_args(argv)
 

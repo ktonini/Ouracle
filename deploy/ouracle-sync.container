@@ -1,0 +1,39 @@
+# Podman Quadlet unit for the one-shot Oura API v2 sync.
+#
+# Runs a fresh container from the same image, sharing the data volume and env
+# file with the API server. Triggered by ouracle-sync.timer — do not enable
+# directly. First run backfills DEFAULT_BACKFILL_DAYS (10 years) automatically;
+# subsequent runs are incremental from the per-collection watermarks.
+#
+# Install (rootless):
+#   cp deploy/ouracle-sync.container ~/.config/containers/systemd/
+#   cp deploy/ouracle-sync.timer     ~/.config/systemd/user/
+#   systemctl --user daemon-reload
+#   systemctl --user enable --now ouracle-sync.timer
+#
+# Manual run / first backfill:
+#   systemctl --user start ouracle-sync.service
+# Logs:
+#   journalctl --user -u ouracle-sync.service
+
+[Unit]
+Description=Ouracle Oura API v2 sync (one-shot)
+Wants=network-online.target
+After=network-online.target
+
+[Container]
+Image=localhost/ouracle:latest
+ContainerName=ouracle-sync
+EnvironmentFile=%h/.config/ouracle/env
+# Lowercase :z — the volume is shared with the ouracle API container.
+Volume=ouracle-data:/data:z
+Exec=python -m backend.src.oura_v2.sync
+NoNewPrivileges=true
+ReadOnly=true
+ReadOnlyTmpfs=true
+
+[Service]
+Type=oneshot
+# A 10-year heartrate backfill is many chunked requests; be generous.
+TimeoutStartSec=3600
+# Exit code 2 = dead credential (401): regenerate the Oura token.
