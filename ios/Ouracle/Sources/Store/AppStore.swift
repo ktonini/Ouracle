@@ -36,7 +36,13 @@ final class AppStore: ObservableObject {
         return OuracleClient(baseURL: url, token: token)
     }
 
-    var today: DailySummary? { sync?.days.last }
+    /// Server sends days newest-first; normalize ascending so `.last` is
+    /// always the most recent day regardless of contract order.
+    var days: [DailySummary] {
+        (sync?.days ?? []).sorted { $0.day < $1.day }
+    }
+
+    var today: DailySummary? { days.last }
 
     func saveToken(_ newToken: String) {
         token = newToken

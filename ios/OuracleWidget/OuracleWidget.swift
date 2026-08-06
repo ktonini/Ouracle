@@ -84,8 +84,9 @@ struct ScoresProvider: TimelineProvider {
 
         let client = OuracleClient(baseURL: url, token: token)
         guard
-            let sync = try? await client.sync(windowDays: 3),
-            let day = sync.days.last
+            let sync = try? await client.sync(windowDays: 7),
+            // Server sends days newest-first; take the most recent by date.
+            let day = sync.days.max(by: { $0.day < $1.day })
         else { return cached }
 
         let fresh = SharedStore.Snapshot(

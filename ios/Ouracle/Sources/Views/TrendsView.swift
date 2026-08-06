@@ -52,7 +52,7 @@ struct TrendsView: View {
     private var points: [TrendPoint] {
         let formatter = DateFormatter()
         formatter.dateFormat = "yyyy-MM-dd"
-        let days = (store.sync?.days ?? []).suffix(window)
+        let days = store.days.suffix(window)
         return days.compactMap { day in
             guard let value = metric.value(from: day),
                   let date = formatter.date(from: day.day)

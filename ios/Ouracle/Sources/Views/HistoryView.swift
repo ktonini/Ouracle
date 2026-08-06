@@ -5,7 +5,7 @@ struct HistoryView: View {
 
     var body: some View {
         NavigationStack {
-            List((store.sync?.days ?? []).reversed()) { day in
+            List(store.days.reversed()) { day in
                 NavigationLink(value: day) {
                     HStack {
                         Text(shortDay(day.day))
@@ -23,7 +23,7 @@ struct HistoryView: View {
             }
             .navigationTitle("History")
             .overlay {
-                if store.sync?.days.isEmpty ?? true {
+                if store.days.isEmpty {
                     ContentUnavailableView(
                         "No history yet", systemImage: "calendar"
                     )
