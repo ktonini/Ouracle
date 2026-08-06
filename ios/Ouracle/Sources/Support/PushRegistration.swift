@@ -5,7 +5,24 @@ import SwiftUI
 import UIKit
 import UserNotifications
 
-final class PushDelegate: NSObject, UIApplicationDelegate {
+final class PushDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCenterDelegate {
+    func application(
+        _ application: UIApplication,
+        didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]? = nil
+    ) -> Bool {
+        UNUserNotificationCenter.current().delegate = self
+        return true
+    }
+
+    /// Show banners even while the app is foregrounded (iOS suppresses
+    /// them by default for the frontmost app).
+    func userNotificationCenter(
+        _ center: UNUserNotificationCenter,
+        willPresent notification: UNNotification
+    ) async -> UNNotificationPresentationOptions {
+        [.banner, .sound, .list]
+    }
+
     /// Static because @UIApplicationDelegateAdaptor instantiates its own
     /// delegate — instance state set elsewhere would never be seen. If the
     /// token arrives before the handler is set, it replays on set.
