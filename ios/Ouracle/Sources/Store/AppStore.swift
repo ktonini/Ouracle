@@ -8,6 +8,7 @@ import WidgetKit
 final class AppStore: ObservableObject {
     @AppStorage("serverURL") var serverURLString: String = "https://oura.cmd.link"
     @AppStorage("healthExportEnabled") var healthExportEnabled: Bool = false
+    @AppStorage("pushRegistered") var pushRegistered: Bool = false
     @Published var token: String
     @Published var sync: SyncResponse?
     @Published var isLoading = false

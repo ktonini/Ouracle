@@ -27,6 +27,7 @@ targets:
         com.apple.security.application-groups:
           - group.com.ktonini.ouracle
         com.apple.developer.healthkit: true
+        aps-environment: production
     settings:
       base:
         GENERATE_INFOPLIST_FILE: YES

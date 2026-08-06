@@ -20,7 +20,7 @@ from typing import List, Optional
 from sqlalchemy.orm import Session
 
 from ..models import IngestState, Readiness, Sleep, SleepSession
-from ..notify import send_pushover
+from ..notify import notify
 from .client import OuraV2Client
 from .credentials import CredentialError, provider_from_env
 from .sync import run_sync
@@ -130,12 +130,17 @@ def main(argv: Optional[List[str]] = None) -> int:
 
     logging.basicConfig(level=logging.INFO, format="%(levelname)s:%(name)s:%(message)s")
 
-    if args.test:
-        ok = send_pushover("Wake report is armed. 😴", title="Ouracle test")
-        print("test notification sent" if ok else "pushover not configured/failed")
-        return 0 if ok else 1
-
     from ..database import SessionLocal, init_db
+
+    if args.test:
+        init_db()
+        db = SessionLocal()
+        try:
+            ok = notify(db, "Ouracle test", "Wake report is armed. 😴")
+        finally:
+            db.close()
+        print("test notification sent" if ok else "no notification channel worked")
+        return 0 if ok else 1
 
     try:
         client = OuraV2Client(provider_from_env())
@@ -149,7 +154,7 @@ def main(argv: Optional[List[str]] = None) -> int:
             if message is None:
                 logger.info("No new sleep to report for %s.", today)
                 return 0
-            if send_pushover(message, title="Last night"):
+            if notify(db, "Last night", message):
                 mark_sent(db, today)
                 logger.info("Wake report sent for %s.", today)
         finally:

@@ -2,6 +2,7 @@ import SwiftUI
 
 @main
 struct OuracleApp: App {
+    @UIApplicationDelegateAdaptor(PushDelegate.self) private var pushDelegate
     @StateObject private var store = AppStore()
 
     var body: some Scene {

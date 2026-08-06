@@ -63,6 +63,50 @@ struct OuracleClient {
         try await get("api/mobile/sleep/\(day)")
     }
 
+    func registerPushToken(_ token: String, deviceName: String) async throws {
+        struct Body: Encodable {
+            let token: String
+            let device_name: String
+        }
+        struct Response: Decodable { let status: String }
+        let _: Response = try await post(
+            "api/mobile/push-token", body: Body(token: token, device_name: deviceName)
+        )
+    }
+
+    private func post<B: Encodable, T: Decodable>(
+        _ path: String, body: B
+    ) async throws -> T {
+        var request = URLRequest(url: baseURL.appending(path: path))
+        request.httpMethod = "POST"
+        request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.httpBody = try JSONEncoder().encode(body)
+        request.timeoutInterval = 20
+
+        let data: Data
+        let response: URLResponse
+        do {
+            (data, response) = try await session.data(for: request)
+        } catch {
+            throw OuracleError.network(error)
+        }
+        let http = response as! HTTPURLResponse
+        switch http.statusCode {
+        case 200:
+            do {
+                return try JSONDecoder().decode(T.self, from: data)
+            } catch {
+                throw OuracleError.decoding(error)
+            }
+        case 401, 403:
+            throw OuracleError.unauthorized
+        default:
+            let detail = String(data: data, encoding: .utf8) ?? ""
+            throw OuracleError.server(http.statusCode, String(detail.prefix(200)))
+        }
+    }
+
     private func get<T: Decodable>(
         _ path: String, query: [URLQueryItem] = []
     ) async throws -> T {

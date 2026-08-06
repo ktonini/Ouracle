@@ -793,6 +793,32 @@ def mobile_sleep_sessions(
     ]
 
 
+class PushTokenRequest(BaseModel):
+    token: str = Field(min_length=16, max_length=200)
+    device_name: str = Field(default="iPhone", max_length=64)
+
+
+@mobile_client_router.post("/api/mobile/push-token")
+def register_push_token(
+    request: PushTokenRequest,
+    _: Dict[str, Any] = Depends(_require_mobile_token),
+    db: Session = Depends(get_db),
+):
+    """Registers an APNs device token for wake reports and alerts."""
+    from ..models import IngestState
+    from ..notify import DEVICE_TOKEN_PREFIX
+
+    key = DEVICE_TOKEN_PREFIX + request.token.strip().lower()
+    row = db.get(IngestState, key)
+    if row is None:
+        row = IngestState(key=key)
+        db.add(row)
+    row.value = request.device_name
+    row.updated_at = datetime.now(timezone.utc).replace(tzinfo=None)
+    db.commit()
+    return {"status": "registered", "device_name": request.device_name}
+
+
 @mobile_client_router.get("/api/mobile/ping", response_model=MobileServerStatusResponse)
 def mobile_ping(
     _: Dict[str, Any] = Depends(_require_mobile_token),

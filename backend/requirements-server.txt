@@ -11,6 +11,11 @@ uvicorn[standard]==0.34.0
 # Oura API v2 ingest adapter (backend.src.oura_v2)
 httpx==0.28.1
 
+# Native push notifications (backend.src.notify APNs sender)
+h2==4.4.1
+PyJWT==2.13.0
+cryptography==50.0.0
+
 # Test/dev extras (uncomment locally; not installed in the container image):
 # pytest==9.1.1
 # httpx==0.28.1

@@ -6,6 +6,7 @@ struct SettingsView: View {
     @State private var tokenDraft = ""
     @State private var testResult: String?
     @State private var testing = false
+    @State private var pushStatus: String?
 
     var body: some View {
         NavigationStack {
@@ -52,6 +53,26 @@ struct SettingsView: View {
                         Task { await store.refresh() }
                     }
                     .disabled(urlDraft.isEmpty || tokenDraft.isEmpty)
+                }
+
+                Section("Notifications") {
+                    if store.pushRegistered {
+                        Label("Wake reports enabled on this device", systemImage: "bell.badge.fill")
+                            .foregroundStyle(.green)
+                    }
+                    Button(store.pushRegistered ? "Re-register notifications" : "Enable wake notifications") {
+                        Task {
+                            pushStatus = await store.enablePushNotifications()
+                        }
+                    }
+                    if let pushStatus {
+                        Text(pushStatus)
+                            .font(.footnote)
+                            .foregroundStyle(.secondary)
+                    }
+                    Text("A morning notification with last night's sleep, sent by your server.")
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
                 }
 
                 Section("Apple Health") {
