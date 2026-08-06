@@ -7,6 +7,9 @@ struct SettingsView: View {
     @State private var testResult: String?
     @State private var testing = false
     @State private var pushStatus: String?
+    @State private var ringInfo: RingInfo?
+    @State private var ringError: String?
+    @State private var ringProbing = false
 
     var body: some View {
         NavigationStack {
@@ -53,6 +56,38 @@ struct SettingsView: View {
                         Task { await store.refresh() }
                     }
                     .disabled(urlDraft.isEmpty || tokenDraft.isEmpty)
+                }
+
+                Section("Ring (direct Bluetooth)") {
+                    Button(ringProbing ? "Reading…" : "Read ring info") {
+                        Task {
+                            ringProbing = true
+                            ringInfo = nil
+                            ringError = nil
+                            do {
+                                ringInfo = try await RingBLEClient().readInfo()
+                            } catch {
+                                ringError = error.localizedDescription
+                            }
+                            ringProbing = false
+                        }
+                    }
+                    .disabled(ringProbing)
+
+                    if let ringInfo {
+                        LabeledContent("Firmware", value: ringInfo.firmware)
+                        LabeledContent("API", value: ringInfo.apiVersion)
+                        LabeledContent("Bluetooth", value: ringInfo.btStack)
+                        LabeledContent("MAC", value: ringInfo.macAddress)
+                    }
+                    if let ringError {
+                        Text(ringError)
+                            .font(.footnote)
+                            .foregroundStyle(.red)
+                    }
+                    Text("Talks to the ring directly, alongside the Oura app. Battery and live heart rate need the ring's auth key (not yet configured).")
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
                 }
 
                 Section("Notifications") {

@@ -38,6 +38,7 @@ targets:
         # Standard HTTPS only — answers the export-compliance question so
         # TestFlight builds are available to testers immediately.
         INFOPLIST_KEY_ITSAppUsesNonExemptEncryption: NO
+        INFOPLIST_KEY_NSBluetoothAlwaysUsageDescription: "Ouracle reads your ring directly over Bluetooth for live device info and sensor data."
         INFOPLIST_KEY_NSHealthShareUsageDescription: "Ouracle does not read Health data."
         INFOPLIST_KEY_NSHealthUpdateUsageDescription: "Ouracle writes your ring's sleep stages, HRV, and resting heart rate into Apple Health."
         PRODUCT_BUNDLE_IDENTIFIER: com.ktonini.ouracle
