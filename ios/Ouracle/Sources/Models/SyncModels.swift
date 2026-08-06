@@ -23,6 +23,18 @@ struct ServerStatus: Codable, Equatable {
     }
 }
 
+struct RingBatteryStatus: Codable, Equatable {
+    let level: Int
+    let charging: Bool
+    let inCharger: Bool
+    let timestamp: String
+
+    enum CodingKeys: String, CodingKey {
+        case level, charging, timestamp
+        case inCharger = "in_charger"
+    }
+}
+
 struct SyncResponse: Codable, Equatable {
     let generatedAt: String
     let latestDay: String?
@@ -32,6 +44,7 @@ struct SyncResponse: Codable, Equatable {
     let workouts: [Workout]
     let todayInsights: TodayInsights?
     let syncFreshness: SyncFreshness?
+    let ringBattery: RingBatteryStatus?
 
     enum CodingKeys: String, CodingKey {
         case generatedAt = "generated_at"
@@ -42,6 +55,7 @@ struct SyncResponse: Codable, Equatable {
         case workouts
         case todayInsights = "today_insights"
         case syncFreshness = "sync_freshness"
+        case ringBattery = "ring_battery"
     }
 }
 

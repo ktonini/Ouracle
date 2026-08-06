@@ -33,6 +33,9 @@ SLEEP_COLLECTIONS = [
     "daily_spo2",
     "daily_readiness",
     "daily_stress",
+    # Cheap single request; keeps the ring battery reading fresh through
+    # the morning window instead of only at the daily sync.
+    "ring_battery_level",
 ]
 
 MARKER_PREFIX = "wake_report:"

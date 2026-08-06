@@ -65,6 +65,48 @@ struct TodayView: View {
             metric("Sleep", day.totalSleepDuration.map(duration))
             metric("Calories", day.activeCalories.map { $0.formatted() })
             metric("Resilience", day.resilienceLevel?.capitalized)
+            batteryTile
+        }
+    }
+
+    @ViewBuilder
+    private var batteryTile: some View {
+        if let battery = store.sync?.ringBattery {
+            VStack(spacing: 4) {
+                HStack(spacing: 4) {
+                    Image(systemName: batterySymbol(battery))
+                        .foregroundStyle(batteryColor(battery.level))
+                    Text("\(battery.level)%")
+                        .font(.headline)
+                        .monospacedDigit()
+                }
+                Text(battery.charging || battery.inCharger ? "Charging" : "Ring")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+            }
+            .frame(maxWidth: .infinity)
+            .padding(.vertical, 10)
+            .background(.quaternary.opacity(0.5), in: RoundedRectangle(cornerRadius: 10))
+        }
+    }
+
+    private func batterySymbol(_ battery: RingBatteryStatus) -> String {
+        if battery.charging || battery.inCharger {
+            return "battery.100percent.bolt"
+        }
+        switch battery.level {
+        case 75...: return "battery.100percent"
+        case 50..<75: return "battery.75percent"
+        case 25..<50: return "battery.50percent"
+        default: return "battery.25percent"
+        }
+    }
+
+    private func batteryColor(_ level: Int) -> Color {
+        switch level {
+        case 50...: return .green
+        case 20..<50: return .orange
+        default: return .red
         }
     }
 

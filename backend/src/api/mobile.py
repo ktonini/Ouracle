@@ -18,6 +18,7 @@ from ..models import (
     CardiovascularAge,
     Readiness,
     Resilience,
+    RingBattery,
     Sleep,
     SleepSession,
     Workout,
@@ -225,6 +226,13 @@ class MobileTodayInsights(BaseModel):
     guidance: Optional[MobileDailyGuidance] = None
 
 
+class MobileRingBattery(BaseModel):
+    level: int
+    charging: bool
+    in_charger: bool
+    timestamp: datetime
+
+
 class MobileSyncResponse(BaseModel):
     generated_at: datetime
     latest_day: Optional[date] = None
@@ -234,6 +242,19 @@ class MobileSyncResponse(BaseModel):
     workouts: List[MobileWorkoutResponse]
     today_insights: Optional[MobileTodayInsights] = None
     sync_freshness: Optional[MobileSyncFreshness] = None
+    ring_battery: Optional[MobileRingBattery] = None
+
+
+def _latest_ring_battery(db: Session) -> Optional[MobileRingBattery]:
+    row = db.query(RingBattery).order_by(RingBattery.timestamp.desc()).first()
+    if row is None:
+        return None
+    return MobileRingBattery(
+        level=row.level,
+        charging=row.charging,
+        in_charger=row.in_charger,
+        timestamp=row.timestamp,
+    )
 
 
 def _device_tokens() -> Dict[str, str]:
@@ -438,6 +459,7 @@ def _build_sync_response(db: Session, window_days: int) -> MobileSyncResponse:
             available_start_day=None,
             days=[],
             workouts=[],
+            ring_battery=_latest_ring_battery(db),
         )
 
     start_day = latest_day - timedelta(days=window_days - 1)
@@ -611,6 +633,7 @@ def _build_sync_response(db: Session, window_days: int) -> MobileSyncResponse:
         workouts=workouts,
         today_insights=today_insights,
         sync_freshness=sync_freshness,
+        ring_battery=_latest_ring_battery(db),
     )
 
 
