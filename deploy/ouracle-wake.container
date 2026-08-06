@@ -1,0 +1,26 @@
+# One-shot morning wake report: light sleep-collection sync + push
+# notification the first time last night's sleep appears. Triggered by
+# ouracle-wake.timer every 15 minutes during the morning window.
+#
+# Install like ouracle-sync (see deploy/README.md). Requires
+# OURACLE_PUSHOVER_TOKEN / OURACLE_PUSHOVER_USER in the env file.
+
+[Unit]
+Description=Ouracle wake report (one-shot)
+Wants=network-online.target
+After=network-online.target
+
+[Container]
+Image=localhost/ouracle:latest
+ContainerName=ouracle-wake
+EnvironmentFile=%h/pods/ouracle/env
+Volume=%h/pods/ouracle/data:/data:z
+UserNS=keep-id:uid=1001,gid=0
+Exec=python -m backend.src.oura_v2.wake_report
+NoNewPrivileges=true
+ReadOnly=true
+ReadOnlyTmpfs=true
+
+[Service]
+Type=oneshot
+TimeoutStartSec=600

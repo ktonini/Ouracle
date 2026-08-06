@@ -1,0 +1,12 @@
+# Fires the wake report every 15 minutes, 4:00-12:45 local time.
+# Install: cp to ~/.config/systemd/user/ && systemctl --user enable --now ouracle-wake.timer
+
+[Unit]
+Description=Ouracle wake report window
+
+[Timer]
+OnCalendar=*-*-* 04..12:0/15:00
+Persistent=false
+
+[Install]
+WantedBy=timers.target
