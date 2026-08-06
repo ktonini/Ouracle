@@ -6,17 +6,25 @@ import UIKit
 import UserNotifications
 
 final class PushDelegate: NSObject, UIApplicationDelegate {
-    static let shared = PushDelegate()
-
-    /// Set by the store so the delegate can upload the token on arrival.
-    var onToken: ((String) -> Void)?
+    /// Static because @UIApplicationDelegateAdaptor instantiates its own
+    /// delegate — instance state set elsewhere would never be seen. If the
+    /// token arrives before the handler is set, it replays on set.
+    static var onToken: ((String) -> Void)? {
+        didSet {
+            if let token = lastToken {
+                onToken?(token)
+            }
+        }
+    }
+    private static var lastToken: String?
 
     func application(
         _ application: UIApplication,
         didRegisterForRemoteNotificationsWithDeviceToken deviceToken: Data
     ) {
         let hex = deviceToken.map { String(format: "%02x", $0) }.joined()
-        onToken?(hex)
+        Self.lastToken = hex
+        Self.onToken?(hex)
     }
 
     func application(
@@ -42,7 +50,7 @@ extension AppStore {
             return "Permission error: \(error.localizedDescription)"
         }
 
-        PushDelegate.shared.onToken = { [weak self] token in
+        PushDelegate.onToken = { [weak self] token in
             Task { @MainActor in
                 await self?.uploadPushToken(token)
             }
