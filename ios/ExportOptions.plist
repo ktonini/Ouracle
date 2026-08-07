@@ -10,5 +10,20 @@
     <string>K3M2778TQN</string>
     <key>manageAppVersionAndBuildNumber</key>
     <false/>
+
+    <!-- Manual signing: exportArchive will not guess. Each bundle ID must be
+         mapped to its profile by name, or export fails claiming the profile
+         lacks the app's capabilities. -->
+    <key>signingStyle</key>
+    <string>manual</string>
+    <key>signingCertificate</key>
+    <string>Apple Distribution</string>
+    <key>provisioningProfiles</key>
+    <dict>
+        <key>com.ktonini.ouracle</key>
+        <string>Ouracle App Store v2</string>
+        <key>com.ktonini.ouracle.widget</key>
+        <string>Ouracle Widget App Store v2</string>
+    </dict>
 </dict>
 </plist>
