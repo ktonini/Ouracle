@@ -28,6 +28,14 @@ struct RingBattery: Equatable {
     var charging: Bool
 }
 
+struct RingReading: Equatable {
+    var bpm: Int?
+    var spo2Percent: Int?
+    /// Ring-reported measurement state; non-zero means it is actively sampling.
+    var measuring: Bool = false
+    var timestamp: Date = .now
+}
+
 enum RingBLEError: LocalizedError {
     case unavailable(String)
     case notFound
@@ -94,6 +102,54 @@ final class RingBLEClient: NSObject {
         // 0x0C "get battery"
         let response = try await send(Data([0x0C, 0x00]))
         return try Self.parseBattery(response)
+    }
+
+    /// Streams heart-rate readings for `seconds`, polling the ring's latest
+    /// cached measurement over a single authenticated connection.
+    ///
+    /// Note this is a poll, not a push: the ring measures on its own schedule,
+    /// so readings repeat until it takes a new one. Values only appear while
+    /// the ring is worn.
+    func streamHeartRate(
+        seconds: TimeInterval = 60,
+        pollInterval: TimeInterval = 2
+    ) -> AsyncThrowingStream<RingReading, Error> {
+        AsyncThrowingStream { continuation in
+            Task {
+                do {
+                    guard let key = Self.storedAuthKey() else {
+                        throw RingBLEError.noAuthKey
+                    }
+                    try await waitForPowerOn()
+                    let ring = try await findRing()
+                    try await connect(ring)
+                    try await authenticate(key: key)
+
+                    let deadline = Date().addingTimeInterval(seconds)
+                    while Date() < deadline, !Task.isCancelled {
+                        // 0x2f/0x24 feature-latest, feature 0x02 = daytime HR.
+                        let hr = try await send(Data([0x2F, 0x02, 0x24, 0x02]))
+                        var reading = Self.parseLatestHeartRate(hr)
+
+                        // SpO2 (feature 0x04) also carries a bpm sample.
+                        if let spo2 = try? await send(Data([0x2F, 0x02, 0x24, 0x04])),
+                           let parsed = try? Self.parseLatestSpO2(spo2)
+                        {
+                            reading.spo2Percent = parsed.spo2Percent
+                            if reading.bpm == nil { reading.bpm = parsed.bpm }
+                        }
+
+                        continuation.yield(reading)
+                        try await Task.sleep(nanoseconds: UInt64(pollInterval * 1_000_000_000))
+                    }
+                    disconnect()
+                    continuation.finish()
+                } catch {
+                    disconnect()
+                    continuation.finish(throwing: error)
+                }
+            }
+        }
     }
 
     /// App auth is session-scoped: nonce challenge, AES-ECB encrypted with
@@ -190,6 +246,48 @@ final class RingBLEClient: NSObject {
             throw RingBLEError.badResponse("nonce length \(nonce.count)")
         }
         return Data(nonce)
+    }
+
+    /// Feature-latest response: `2f <len> 25 <feature> <result> <status>
+    /// <state> <counter:2> <data…>` — so feature data starts at byte 9.
+    static func latestPayload(_ response: Data, feature: UInt8) throws -> (data: Data, state: UInt8) {
+        if response.count >= 4, response[0] == 0x2F, response[2] == 0x2F {
+            throw RingBLEError.authFailed  // 2f022f01 = auth required
+        }
+        guard response.count >= 9, response[0] == 0x2F, response[2] == 0x25,
+              response[3] == feature
+        else {
+            throw RingBLEError.badResponse(
+                "latest " + response.prefix(5).map { String(format: "%02x", $0) }.joined()
+            )
+        }
+        return (Data(response.dropFirst(9)), response[6])
+    }
+
+    /// Daytime HR: first two data bytes are the RR-corrected inter-beat
+    /// interval in ms; bpm = 60000 / ibi. Zero means "no recent measurement".
+    static func parseLatestHeartRate(_ response: Data) -> RingReading {
+        guard let (data, state) = try? latestPayload(response, feature: 0x02),
+              data.count >= 2
+        else { return RingReading() }
+        let ibi = Int(data[0]) | (Int(data[1]) << 8)
+        let bpm = ibi > 0 ? 60_000 / ibi : nil
+        // Plausibility guard: reject nonsense from a stale/garbage interval.
+        let sane = bpm.flatMap { (30...220).contains($0) ? $0 : nil }
+        return RingReading(bpm: sane, measuring: state != 0)
+    }
+
+    /// SpO2 feature: data[3] = SpO2 %, data[4] = bpm.
+    static func parseLatestSpO2(_ response: Data) throws -> RingReading {
+        let (data, state) = try latestPayload(response, feature: 0x04)
+        guard data.count >= 5 else { return RingReading() }
+        let spo2 = Int(data[3])
+        let bpm = Int(data[4])
+        return RingReading(
+            bpm: (30...220).contains(bpm) ? bpm : nil,
+            spo2Percent: (70...100).contains(spo2) ? spo2 : nil,
+            measuring: state != 0
+        )
     }
 
     /// Battery response: `0d <len> <percent> <charging progress> …`

@@ -7,12 +7,6 @@ struct SettingsView: View {
     @State private var testResult: String?
     @State private var testing = false
     @State private var pushStatus: String?
-    @State private var ringInfo: RingInfo?
-    @State private var ringBattery: RingBattery?
-    @State private var ringError: String?
-    @State private var ringProbing = false
-    @State private var ringKeyDraft = ""
-    @State private var ringKeySaved = Keychain.has(account: "ring-auth-key")
 
     var body: some View {
         NavigationStack {
@@ -61,77 +55,25 @@ struct SettingsView: View {
                     .disabled(urlDraft.isEmpty || tokenDraft.isEmpty)
                 }
 
-                Section("Ring (direct Bluetooth)") {
-                    Button(ringProbing ? "Reading…" : "Read ring info") {
-                        Task {
-                            ringProbing = true
-                            ringInfo = nil
-                            ringError = nil
-                            do {
-                                ringInfo = try await RingBLEClient().readInfo()
-                            } catch {
-                                ringError = error.localizedDescription
+                Section {
+                    NavigationLink {
+                        RingView()
+                    } label: {
+                        Label {
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text("Ring")
+                                Text("Battery, live heart rate, device info")
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
                             }
-                            ringProbing = false
+                        } icon: {
+                            Image(systemName: "circle.circle")
                         }
                     }
-                    .disabled(ringProbing)
-
-                    if let ringInfo {
-                        LabeledContent("Firmware", value: ringInfo.firmware)
-                        LabeledContent("API", value: ringInfo.apiVersion)
-                        LabeledContent("Bluetooth", value: ringInfo.btStack)
-                        LabeledContent("MAC", value: ringInfo.macAddress)
-                    }
-                    Button(ringProbing ? "Reading…" : "Read battery from ring") {
-                        Task {
-                            ringProbing = true
-                            ringBattery = nil
-                            ringError = nil
-                            do {
-                                ringBattery = try await RingBLEClient().readBattery()
-                            } catch {
-                                ringError = error.localizedDescription
-                            }
-                            ringProbing = false
-                        }
-                    }
-                    .disabled(ringProbing || !ringKeySaved)
-
-                    if let ringBattery {
-                        LabeledContent(
-                            "Ring battery",
-                            value: "\(ringBattery.percent)%\(ringBattery.charging ? " (charging)" : "")"
-                        )
-                    }
-                    if let ringError {
-                        Text(ringError)
-                            .font(.footnote)
-                            .foregroundStyle(.red)
-                    }
-
-                    SecureField(
-                        ringKeySaved ? "Auth key saved" : "Ring auth key (32 hex chars)",
-                        text: $ringKeyDraft
-                    )
-                    .autocorrectionDisabled()
-                    .textInputAutocapitalization(.never)
-                    Button("Save auth key") {
-                        let clean = ringKeyDraft.filter { !$0.isWhitespace }
-                        if Data(hexString: clean)?.count == 16 {
-                            Keychain.save(clean, account: "ring-auth-key")
-                            ringKeySaved = true
-                            ringKeyDraft = ""
-                            ringError = nil
-                        } else {
-                            ringError = "Auth key must be 32 hex characters (16 bytes)."
-                        }
-                    }
-                    .disabled(ringKeyDraft.isEmpty)
-
-                    Text("Talks to the ring directly, alongside the Oura app — no cloud involved. Battery needs the ring's auth key from the Oura app's database.")
-                        .font(.footnote)
-                        .foregroundStyle(.secondary)
+                } header: {
+                    Text("Direct Bluetooth")
+                } footer: {
+                    Text("Reads your ring directly, alongside the Oura app — no cloud involved.")
                 }
 
                 Section("Notifications") {
