@@ -1,18 +1,21 @@
 #!/bin/bash
 # Ship a TestFlight build: bump build number, regenerate the project,
-# archive with App Store Connect cloud signing, export + upload.
+# archive, export + upload.
 #
-# Requires the ASC API key at ~/.appstoreconnect/private_keys/AuthKey_<ID>.p8
+# Signing: manual, using the stored distribution identity and App Store
+# profiles (CI imports them from secrets). Cloud signing is deliberately
+# NOT used — it mints a new Apple certificate per run and trips the
+# per-account cap. Locally, run with CLOUD_SIGNING=1 to fall back to
+# -allowProvisioningUpdates.
 set -euo pipefail
 
 cd "$(dirname "$0")/.."
 
-# Overridable for CI (GitHub Actions passes these from repo secrets).
 KEY_ID="${KEY_ID:-Y9PQ9VX2S2}"
 ISSUER_ID="${ISSUER_ID:-90c08fce-2fe1-43bd-a8cc-83c076f3a78d}"
 KEY_PATH="${KEY_PATH:-$HOME/.appstoreconnect/private_keys/AuthKey_${KEY_ID}.p8}"
 
-# Build number = seconds-truncated epoch: monotonically increasing, no state.
+# Build number = epoch minutes: monotonically increasing, no state to track.
 BUILD_NUMBER=$(( $(date +%s) / 60 ))
 sed -i '' "s/CURRENT_PROJECT_VERSION: \"[0-9]*\"/CURRENT_PROJECT_VERSION: \"$BUILD_NUMBER\"/" project.yml
 echo "Build number: $BUILD_NUMBER"
@@ -22,14 +25,21 @@ xcodegen generate
 ARCHIVE="build/Ouracle.xcarchive"
 rm -rf "$ARCHIVE"
 
+SIGNING_ARGS=(
+  -authenticationKeyID "$KEY_ID"
+  -authenticationKeyIssuerID "$ISSUER_ID"
+  -authenticationKeyPath "$KEY_PATH"
+)
+# Release configuration pins manual signing per target in project.yml.
+if [ "${CLOUD_SIGNING:-0}" = "1" ]; then
+  SIGNING_ARGS+=(-allowProvisioningUpdates)
+fi
+
 xcodebuild -project Ouracle.xcodeproj -scheme Ouracle \
   -destination "generic/platform=iOS" \
   -archivePath "$ARCHIVE" \
-  -allowProvisioningUpdates \
-  -authenticationKeyID "$KEY_ID" \
-  -authenticationKeyIssuerID "$ISSUER_ID" \
-  -authenticationKeyPath "$KEY_PATH" \
-  archive | grep -E "error:|warning: .*[Ss]ign|ARCHIVE" || true
+  "${SIGNING_ARGS[@]}" \
+  archive | grep -E "error:|ARCHIVE" || true
 
 test -d "$ARCHIVE" || { echo "Archive failed"; exit 1; }
 
@@ -37,7 +47,6 @@ xcodebuild -exportArchive \
   -archivePath "$ARCHIVE" \
   -exportOptionsPlist ExportOptions.plist \
   -exportPath build/export \
-  -allowProvisioningUpdates \
   -authenticationKeyID "$KEY_ID" \
   -authenticationKeyIssuerID "$ISSUER_ID" \
   -authenticationKeyPath "$KEY_PATH" \

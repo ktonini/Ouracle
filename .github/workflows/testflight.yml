@@ -39,6 +39,37 @@ jobs:
           printf '%s' "$ASC_KEY_P8" > ~/.appstoreconnect/private_keys/AuthKey_${ASC_KEY_ID}.p8
           chmod 600 ~/.appstoreconnect/private_keys/AuthKey_${ASC_KEY_ID}.p8
 
+      # Manual signing with a stored identity. Cloud signing (-allowProvisioningUpdates)
+      # mints a NEW Apple certificate on every run and eventually trips Apple's
+      # per-account cap, failing the archive with "Choose a certificate to revoke".
+      - name: Import signing certificate and profiles
+        env:
+          BUILD_CERT_P12: ${{ secrets.BUILD_CERT_P12 }}
+          BUILD_CERT_PASSWORD: ${{ secrets.BUILD_CERT_PASSWORD }}
+          PROFILE_APP: ${{ secrets.PROFILE_APP }}
+          PROFILE_WIDGET: ${{ secrets.PROFILE_WIDGET }}
+        run: |
+          KEYCHAIN=$RUNNER_TEMP/build.keychain
+          KEYCHAIN_PASSWORD=$(uuidgen)
+          security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN"
+          security set-keychain-settings -lut 3600 "$KEYCHAIN"
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN"
+          security list-keychains -d user -s "$KEYCHAIN" login.keychain
+
+          echo "$BUILD_CERT_P12" | base64 --decode > "$RUNNER_TEMP/dist.p12"
+          security import "$RUNNER_TEMP/dist.p12" -k "$KEYCHAIN" \
+            -P "$BUILD_CERT_PASSWORD" -T /usr/bin/codesign -f pkcs12
+          security set-key-partition-list -S apple-tool:,apple:,codesign: \
+            -s -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN" >/dev/null
+          rm "$RUNNER_TEMP/dist.p12"
+
+          PROFILES=~/Library/MobileDevice/Provisioning\ Profiles
+          mkdir -p "$PROFILES"
+          echo "$PROFILE_APP" | base64 --decode > "$PROFILES/app.mobileprovision"
+          echo "$PROFILE_WIDGET" | base64 --decode > "$PROFILES/widget.mobileprovision"
+
+          security find-identity -v -p codesigning "$KEYCHAIN"
+
       - name: Build & upload
         working-directory: ios
         env:
