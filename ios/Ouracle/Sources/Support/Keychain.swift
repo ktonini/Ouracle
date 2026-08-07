@@ -61,6 +61,11 @@ enum Keychain {
         return String(data: data, encoding: .utf8)
     }
 
+    /// True when a non-empty value exists, without exposing it.
+    static func has(account: String) -> Bool {
+        !(read(account: account) ?? "").isEmpty
+    }
+
     static func delete(account: String) {
         SecItemDelete(baseQuery(account: account, shared: true) as CFDictionary)
         SecItemDelete(baseQuery(account: account, shared: false) as CFDictionary)

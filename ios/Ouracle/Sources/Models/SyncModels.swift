@@ -7,6 +7,24 @@
 
 import Foundation
 
+extension Data {
+    /// Parses hex text (tolerating spaces/newlines); nil if malformed.
+    init?(hexString: String) {
+        let clean = hexString.filter { !$0.isWhitespace }
+        guard clean.count % 2 == 0 else { return nil }
+        var bytes = [UInt8]()
+        bytes.reserveCapacity(clean.count / 2)
+        var index = clean.startIndex
+        while index < clean.endIndex {
+            let next = clean.index(index, offsetBy: 2)
+            guard let byte = UInt8(clean[index..<next], radix: 16) else { return nil }
+            bytes.append(byte)
+            index = next
+        }
+        self.init(bytes)
+    }
+}
+
 struct ServerStatus: Codable, Equatable {
     let status: String
     let generatedAt: String

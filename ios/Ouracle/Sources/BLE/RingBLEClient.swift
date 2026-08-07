@@ -11,6 +11,7 @@
 // Phase 1 implements only unauthenticated reads (firmware, serial). Battery
 // and live HR additionally require the ring's 16-byte app-auth key.
 
+import CommonCrypto
 import CoreBluetooth
 import Foundation
 
@@ -22,11 +23,18 @@ struct RingInfo: Equatable {
     var macAddress: String
 }
 
+struct RingBattery: Equatable {
+    var percent: Int
+    var charging: Bool
+}
+
 enum RingBLEError: LocalizedError {
     case unavailable(String)
     case notFound
     case timeout(String)
     case badResponse(String)
+    case noAuthKey
+    case authFailed
 
     var errorDescription: String? {
         switch self {
@@ -35,6 +43,8 @@ enum RingBLEError: LocalizedError {
             return "Ring not found. Make sure it's worn or charging and the Oura app has connected to it recently."
         case .timeout(let step): return "Timed out during \(step)."
         case .badResponse(let detail): return "Unexpected ring response: \(detail)."
+        case .noAuthKey: return "No ring auth key set. Add it in Settings."
+        case .authFailed: return "Ring rejected the auth key."
         }
     }
 }
@@ -72,6 +82,75 @@ final class RingBLEClient: NSObject {
         return try Self.parseFirmware(response)
     }
 
+    /// Reads the ring's battery level. Requires the 16-byte app-auth key.
+    func readBattery() async throws -> RingBattery {
+        guard let key = Self.storedAuthKey() else { throw RingBLEError.noAuthKey }
+        try await waitForPowerOn()
+        let ring = try await findRing()
+        try await connect(ring)
+        defer { disconnect() }
+
+        try await authenticate(key: key)
+        // 0x0C "get battery"
+        let response = try await send(Data([0x0C, 0x00]))
+        return try Self.parseBattery(response)
+    }
+
+    /// App auth is session-scoped: nonce challenge, AES-ECB encrypted with
+    /// the ring's key, sent back for verification.
+    private func authenticate(key: Data) async throws {
+        let nonceResponse = try await send(Data([0x2F, 0x01, 0x2B]))
+        let nonce = try Self.parseNonce(nonceResponse)
+        let encrypted = try Self.aesECBEncrypt(nonce, key: key)
+
+        var request = Data([0x2F, UInt8(encrypted.count + 1), 0x2D])
+        request.append(encrypted)
+        let result = try await send(request)
+
+        // 2f022e00 = success, 2f022e01 = wrong key
+        guard result.count >= 4, result[2] == 0x2E else {
+            throw RingBLEError.badResponse(result.map { String(format: "%02x", $0) }.joined())
+        }
+        if result[3] != 0x00 { throw RingBLEError.authFailed }
+    }
+
+    static func storedAuthKey() -> Data? {
+        guard let hex = Keychain.read(account: "ring-auth-key"), !hex.isEmpty else {
+            return nil
+        }
+        return Data(hexString: hex)
+    }
+
+    // MARK: - Crypto
+
+    /// AES-128-ECB with PKCS7 padding (PKCS5 in the protocol docs — same
+    /// thing for 16-byte blocks).
+    static func aesECBEncrypt(_ plaintext: Data, key: Data) throws -> Data {
+        let capacity = plaintext.count + kCCBlockSizeAES128
+        var output = Data(count: capacity)
+        var moved = 0
+        let status = output.withUnsafeMutableBytes { outBytes in
+            plaintext.withUnsafeBytes { inBytes in
+                key.withUnsafeBytes { keyBytes in
+                    CCCrypt(
+                        CCOperation(kCCEncrypt),
+                        CCAlgorithm(kCCAlgorithmAES),
+                        CCOptions(kCCOptionECBMode | kCCOptionPKCS7Padding),
+                        keyBytes.baseAddress, key.count,
+                        nil,
+                        inBytes.baseAddress, plaintext.count,
+                        outBytes.baseAddress, capacity,
+                        &moved
+                    )
+                }
+            }
+        }
+        guard status == kCCSuccess else {
+            throw RingBLEError.badResponse("AES failed (\(status))")
+        }
+        return output.prefix(moved)
+    }
+
     // MARK: - Response parsing
 
     /// Payload layout: api(3) firmware(3) bootloader(3) btStack(3) mac(6, reversed)
@@ -97,6 +176,37 @@ final class RingBLEClient: NSObject {
             btStack: version(9),
             macAddress: mac
         )
+    }
+
+    /// Nonce response: `2f 10 2c <15-byte nonce>`
+    static func parseNonce(_ response: Data) throws -> Data {
+        guard response.count >= 3, response[0] == 0x2F, response[2] == 0x2C else {
+            throw RingBLEError.badResponse(
+                "nonce " + response.prefix(4).map { String(format: "%02x", $0) }.joined()
+            )
+        }
+        let nonce = response.dropFirst(3)
+        guard nonce.count == 15 else {
+            throw RingBLEError.badResponse("nonce length \(nonce.count)")
+        }
+        return Data(nonce)
+    }
+
+    /// Battery response: `0d <len> <percent> <charging progress> …`
+    static func parseBattery(_ response: Data) throws -> RingBattery {
+        // Auth-gated refusal comes back as 2f022f01.
+        if response.count >= 4, response[0] == 0x2F, response[2] == 0x2F {
+            throw RingBLEError.authFailed
+        }
+        guard response.count >= 4, response[0] == 0x0D else {
+            throw RingBLEError.badResponse(
+                "battery " + response.prefix(4).map { String(format: "%02x", $0) }.joined()
+            )
+        }
+        let payload = response.dropFirst(2)
+        let percent = Int(payload[payload.startIndex])
+        let chargingProgress = Int(payload[payload.startIndex + 1])
+        return RingBattery(percent: percent, charging: chargingProgress > 0)
     }
 
     // MARK: - Connection plumbing
