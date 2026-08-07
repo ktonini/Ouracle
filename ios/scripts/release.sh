@@ -35,21 +35,37 @@ if [ "${CLOUD_SIGNING:-0}" = "1" ]; then
   SIGNING_ARGS+=(-allowProvisioningUpdates)
 fi
 
-xcodebuild -project Ouracle.xcodeproj -scheme Ouracle \
+# Run xcodebuild, echo the interesting lines, and FAIL on a non-zero exit.
+# (Piping straight into grep would mask failures behind grep's exit status —
+# that once made a failed export report a successful upload.)
+run_xcodebuild() {
+  local phase="$1"; shift
+  local log="build/${phase}.log"
+  mkdir -p build
+  if ! xcodebuild "$@" > "$log" 2>&1; then
+    echo "=== $phase FAILED ==="
+    grep -E "error:|warning: .*sign|\*\* .* FAILED \*\*" "$log" | tail -20 || tail -40 "$log"
+    exit 1
+  fi
+  grep -E "error:|\*\* .* SUCCEEDED \*\*|Upload" "$log" | tail -5 || true
+}
+
+run_xcodebuild archive \
+  -project Ouracle.xcodeproj -scheme Ouracle \
   -destination "generic/platform=iOS" \
   -archivePath "$ARCHIVE" \
   "${SIGNING_ARGS[@]}" \
-  archive | grep -E "error:|ARCHIVE" || true
+  archive
 
-test -d "$ARCHIVE" || { echo "Archive failed"; exit 1; }
+test -d "$ARCHIVE" || { echo "Archive missing after build"; exit 1; }
 
-xcodebuild -exportArchive \
+run_xcodebuild export \
+  -exportArchive \
   -archivePath "$ARCHIVE" \
   -exportOptionsPlist ExportOptions.plist \
   -exportPath build/export \
   -authenticationKeyID "$KEY_ID" \
   -authenticationKeyIssuerID "$ISSUER_ID" \
-  -authenticationKeyPath "$KEY_PATH" \
-  | grep -E "error:|EXPORT|Upload" || true
+  -authenticationKeyPath "$KEY_PATH"
 
 echo "Uploaded build $BUILD_NUMBER — App Store Connect will process it (~5-15 min)."
