@@ -43,6 +43,7 @@ enum RingBLEError: LocalizedError {
     case badResponse(String)
     case noAuthKey
     case authFailed
+    case featuresOff
 
     var errorDescription: String? {
         switch self {
@@ -53,6 +54,8 @@ enum RingBLEError: LocalizedError {
         case .badResponse(let detail): return "Unexpected ring response: \(detail)."
         case .noAuthKey: return "No ring auth key set. Add it in Settings."
         case .authFailed: return "Ring rejected the auth key."
+        case .featuresOff:
+            return "The ring's heart-rate features are switched off. Enable Daytime Heart Rate (and/or SpO2) in the Oura app, then try again."
         }
     }
 }
@@ -125,14 +128,37 @@ final class RingBLEClient: NSObject {
                     try await connect(ring)
                     try await authenticate(key: key)
 
+                    // Which HR features will actually answer? A disabled
+                    // feature stays silent, which otherwise looks like a
+                    // connection timeout.
+                    let daytimeOn = (try? await featureEnabled(0x02)) ?? false
+                    let exerciseOn = (try? await featureEnabled(0x03)) ?? false
+                    let spo2On = (try? await featureEnabled(0x04)) ?? false
+                    guard daytimeOn || exerciseOn || spo2On else {
+                        throw RingBLEError.featuresOff
+                    }
+
                     let deadline = Date().addingTimeInterval(seconds)
                     while Date() < deadline, !Task.isCancelled {
-                        // 0x2f/0x24 feature-latest, feature 0x02 = daytime HR.
-                        let hr = try await send(Data([0x2F, 0x02, 0x24, 0x02]))
-                        var reading = Self.parseLatestHeartRate(hr)
+                        var reading = RingReading()
 
-                        // SpO2 (feature 0x04) also carries a bpm sample.
-                        if let spo2 = try? await send(Data([0x2F, 0x02, 0x24, 0x04])),
+                        // 0x2f/0x24 feature-latest; 0x02 daytime HR.
+                        if daytimeOn,
+                           let hr = try? await send(Data([0x2F, 0x02, 0x24, 0x02]))
+                        {
+                            reading = Self.parseLatestHeartRate(hr)
+                        }
+                        // Exercise HR reports bpm directly.
+                        if reading.bpm == nil, exerciseOn,
+                           let ex = try? await send(Data([0x2F, 0x02, 0x24, 0x03])),
+                           let parsed = try? Self.parseLatestExerciseHR(ex)
+                        {
+                            reading.bpm = parsed.bpm
+                            reading.measuring = reading.measuring || parsed.measuring
+                        }
+                        // SpO2 carries a bpm sample alongside saturation.
+                        if spo2On,
+                           let spo2 = try? await send(Data([0x2F, 0x02, 0x24, 0x04])),
                            let parsed = try? Self.parseLatestSpO2(spo2)
                         {
                             reading.spo2Percent = parsed.spo2Percent
@@ -150,6 +176,25 @@ final class RingBLEClient: NSObject {
                 }
             }
         }
+    }
+
+    /// Reports each measurement feature's mode, so "no heart rate" can be
+    /// distinguished from "feature switched off" without guessing.
+    func featureReport() async throws -> [(name: String, on: Bool)] {
+        guard let key = Self.storedAuthKey() else { throw RingBLEError.noAuthKey }
+        try await waitForPowerOn()
+        let ring = try await findRing()
+        try await connect(ring)
+        defer { disconnect() }
+        try await authenticate(key: key)
+
+        var report: [(String, Bool)] = []
+        for (name, id) in [("Daytime HR", UInt8(0x02)), ("Exercise HR", 0x03),
+                           ("SpO2", 0x04), ("Resting HR", 0x08)] {
+            let on = (try? await featureEnabled(id)) ?? false
+            report.append((name, on))
+        }
+        return report
     }
 
     /// App auth is session-scoped: nonce challenge, AES-ECB encrypted with
@@ -246,6 +291,33 @@ final class RingBLEClient: NSObject {
             throw RingBLEError.badResponse("nonce length \(nonce.count)")
         }
         return Data(nonce)
+    }
+
+    /// Feature status (`2f 02 20 <feature>`) → `2f 06 21 <feature> <mode>
+    /// <status> <state> <subscription>`. Mode 0 means the feature is off, so
+    /// the ring will never answer a latest-value request for it.
+    private func featureEnabled(_ feature: UInt8) async throws -> Bool {
+        let response = try await send(Data([0x2F, 0x02, 0x20, feature]))
+        return Self.parseFeatureMode(response, feature: feature).map { $0 != 0 } ?? false
+    }
+
+    static func parseFeatureMode(_ response: Data, feature: UInt8) -> UInt8? {
+        guard response.count >= 5, response[0] == 0x2F, response[2] == 0x21,
+              response[3] == feature
+        else { return nil }
+        return response[4]
+    }
+
+    /// Exercise HR: bpm sits at data[4] rather than being derived from an
+    /// inter-beat interval.
+    static func parseLatestExerciseHR(_ response: Data) throws -> RingReading {
+        let (data, state) = try latestPayload(response, feature: 0x03)
+        guard data.count >= 5 else { return RingReading() }
+        let bpm = Int(data[4])
+        return RingReading(
+            bpm: (30...220).contains(bpm) ? bpm : nil,
+            measuring: state != 0
+        )
     }
 
     /// Feature-latest response: `2f <len> 25 <feature> <result> <status>

@@ -12,6 +12,7 @@ struct RingView: View {
     @State private var busy = false
     @State private var streaming = false
     @State private var streamTask: Task<Void, Never>?
+    @State private var features: [(name: String, on: Bool)] = []
     @State private var keyDraft = ""
     @State private var keySaved = Keychain.has(account: "ring-auth-key")
 
@@ -155,6 +156,27 @@ struct RingView: View {
                 }
                 .disabled(busy || streaming)
             }
+
+            ForEach(features, id: \.name) { feature in
+                LabeledContent(feature.name) {
+                    Label(
+                        feature.on ? "On" : "Off",
+                        systemImage: feature.on ? "checkmark.circle.fill" : "circle"
+                    )
+                    .foregroundStyle(feature.on ? .green : .secondary)
+                    .labelStyle(.titleAndIcon)
+                }
+            }
+            Button("Check measurement features") {
+                Task {
+                    busy = true
+                    status = nil
+                    do { features = try await RingBLEClient().featureReport() }
+                    catch { status = "Error: \(error.localizedDescription)" }
+                    busy = false
+                }
+            }
+            .disabled(busy || streaming || !keySaved)
         }
     }
 

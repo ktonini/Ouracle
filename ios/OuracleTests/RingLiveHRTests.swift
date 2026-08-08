@@ -52,3 +52,29 @@ final class RingLiveHRTests: XCTestCase {
         }
     }
 }
+
+extension RingLiveHRTests {
+    /// Feature status: `2f 06 21 <feature> <mode> <status> <state> <sub>`.
+    func testFeatureModeOffIsDetected() {
+        // Captured "daytime HR off" shape: mode byte 0.
+        let hex = "2f06210200000000"
+        XCTAssertEqual(RingBLEClient.parseFeatureMode(Data(hex: hex), feature: 0x02), 0)
+    }
+
+    func testFeatureModeAutomaticIsDetected() {
+        // Captured resting-HR row from the protocol notes: mode 1.
+        let hex = "2f06210801000000"
+        XCTAssertEqual(RingBLEClient.parseFeatureMode(Data(hex: hex), feature: 0x08), 1)
+    }
+
+    func testFeatureModeIgnoresMismatchedFeature() {
+        let hex = "2f06210201000000"
+        XCTAssertNil(RingBLEClient.parseFeatureMode(Data(hex: hex), feature: 0x04))
+    }
+
+    func testExerciseHeartRateDecodesBpmDirectly() throws {
+        let hex = "2f0e250300110200" + "00" + "00000000" + "48"
+        let reading = try RingBLEClient.parseLatestExerciseHR(Data(hex: hex))
+        XCTAssertEqual(reading.bpm, 72)
+    }
+}
