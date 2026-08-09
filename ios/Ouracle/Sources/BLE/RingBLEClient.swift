@@ -74,6 +74,8 @@ final class RingBLEClient: NSObject {
     private var responseContinuation: CheckedContinuation<Data, Error>?
     private var expectedTag: UInt8?
     private var pendingSubscriptions = 0
+    /// Ties each timeout timer to the request that scheduled it.
+    private var requestGeneration: UInt64 = 0
     private var discoveryContinuation: CheckedContinuation<CBPeripheral, Error>?
 
     override init() {
@@ -199,8 +201,8 @@ final class RingBLEClient: NSObject {
         let flag: UInt8 = on ? 0x01 : 0x00
         // Short timeouts: the ring-mode command's ack shape isn't documented,
         // so a missing reply must not stall the session.
-        _ = try? await send(Data([0x16, 0x01, flag]), expectTag: 0x17, timeout: 4)
-        _ = try? await send(Data([0x31, 0x04, flag, 0x00, 0x00, 0x00]), timeout: 4)
+        _ = try? await send(Data([0x16, 0x01, flag]), expectTag: 0x17, timeout: 4, label: "ble mode")
+        _ = try? await send(Data([0x31, 0x04, flag, 0x00, 0x00, 0x00]), timeout: 4, label: "ring mode")
     }
 
     /// Reports each measurement feature's mode, so "no heart rate" can be
@@ -472,13 +474,21 @@ final class RingBLEClient: NSObject {
             throw RingBLEError.timeout("characteristic discovery")
         }
         expectedTag = expectTag
+        requestGeneration &+= 1
+        let generation = requestGeneration
         let writeType: CBCharacteristicWriteType =
             writeChar.properties.contains(.write) ? .withResponse : .withoutResponse
         return try await withCheckedThrowingContinuation { continuation in
             responseContinuation = continuation
             peripheral.writeValue(packet, for: writeChar, type: writeType)
             DispatchQueue.main.asyncAfter(deadline: .now() + timeout) { [weak self] in
-                guard let self, let pending = self.responseContinuation else { return }
+                // Only time out the request this timer belongs to. Without
+                // the generation check, a finished request's timer fires
+                // later and cancels whatever is in flight then — reporting
+                // the wrong step, and breaking any multi-command session.
+                guard let self, self.requestGeneration == generation,
+                      let pending = self.responseContinuation
+                else { return }
                 self.responseContinuation = nil
                 self.expectedTag = nil
                 pending.resume(throwing: RingBLEError.timeout(label))
