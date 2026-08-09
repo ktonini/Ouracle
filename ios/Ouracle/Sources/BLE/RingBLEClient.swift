@@ -224,22 +224,30 @@ final class RingBLEClient: NSObject {
                     if characteristic.properties.contains(.notify) { props.append("notify") }
                     if characteristic.properties.contains(.indicate) { props.append("indicate") }
                     if characteristic.properties.contains(.read) { props.append("read") }
-                    log.append("char …\(characteristic.uuid.uuidString.prefix(8)): \(props.joined(separator: ","))")
+                    let subscribed = characteristic.isNotifying ? " [subscribed]" : ""
+                    log.append("char \(characteristic.uuid.uuidString.prefix(8)): \(props.joined(separator: ","))\(subscribed)")
                 }
             }
 
-            // Unauthenticated command first: proves the request path works.
-            if let info = try? await send(Data([0x08, 0x03, 0x00, 0x00, 0x00]), timeout: 6, label: "info") {
-                log.append("firmware reply: \(info.prefix(12).hexString)")
+            // Order matters? readBattery sends the nonce first and works;
+            // the previous diagnostic sent firmware first and the nonce went
+            // unanswered. Test all three positions in one session.
+            if let nonce = try? await send(Data([0x2F, 0x01, 0x2B]), timeout: 8, label: "nonce") {
+                log.append("1. nonce FIRST: \(nonce.prefix(20).hexString)")
             } else {
-                log.append("firmware: NO REPLY")
+                log.append("1. nonce FIRST: NO REPLY")
             }
 
-            // Then the nonce that has been timing out.
-            if let nonce = try? await send(Data([0x2F, 0x01, 0x2B]), timeout: 8, label: "nonce") {
-                log.append("nonce reply: \(nonce.prefix(20).hexString)")
+            if let info = try? await send(Data([0x08, 0x03, 0x00, 0x00, 0x00]), timeout: 6, label: "info") {
+                log.append("2. firmware: \(info.prefix(8).hexString)")
             } else {
-                log.append("nonce: NO REPLY")
+                log.append("2. firmware: NO REPLY")
+            }
+
+            if let nonce2 = try? await send(Data([0x2F, 0x01, 0x2B]), timeout: 8, label: "nonce2") {
+                log.append("3. nonce AFTER: \(nonce2.prefix(20).hexString)")
+            } else {
+                log.append("3. nonce AFTER: NO REPLY")
             }
 
             disconnect()
@@ -680,7 +688,8 @@ extension RingBLEClient: CBPeripheralDelegate {
         // Capture before any filtering, so unsolicited pushes are logged too.
         if capturing {
             captureLog.append(
-                "…\(characteristic.uuid.uuidString.suffix(12).prefix(4)) → \(value.prefix(20).hexString)"
+                // These UUIDs differ in their FIRST block; the tail is shared.
+                "\(characteristic.uuid.uuidString.prefix(8)) → \(value.prefix(20).hexString)"
             )
         }
         // Accept replies from any subscribed characteristic in the service.
