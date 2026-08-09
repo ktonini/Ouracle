@@ -219,6 +219,31 @@ final class RingBLEClient: NSObject {
         return log
     }
 
+    /// Clears leftover ring modes and reports whether auth works afterwards.
+    func resetAndVerify() async -> [String] {
+        var log: [String] = []
+        do {
+            try await waitForPowerOn()
+            let ring = try await findRing()
+            try await connect(ring)
+            await resetRingMode()
+            log.append("ring mode reset sent")
+
+            let nonce = try await send(Data([0x2F, 0x01, 0x2B]), timeout: 8, label: "nonce")
+            log.append("nonce reply: \(nonce.prefix(8).hexString)")
+            if nonce.first == 0x2F {
+                log.append("✅ ring is issuing nonces again")
+            } else {
+                log.append("❌ still not a nonce — ring remains in an odd state")
+            }
+            disconnect()
+        } catch {
+            log.append("failed: \(error.localizedDescription)")
+            disconnect()
+        }
+        return log
+    }
+
     /// Minimal connect-and-ask used by the A/B comparison.
     func probe() async -> [String] {
         var log: [String] = []
@@ -352,6 +377,20 @@ final class RingBLEClient: NSObject {
         return report
     }
 
+    /// Clears any leftover fast-HR/BLE mode before authenticating.
+    ///
+    /// A live-HR session that dies mid-way can leave the ring in fast mode
+    /// (its restore never runs, or runs after disconnect). In that state the
+    /// ring answers the auth-nonce request with `17 01 02` — an 0x16 BLE-mode
+    /// ack — instead of issuing a nonce, so every subsequent authenticated
+    /// command fails until the mode is cleared.
+    func resetRingMode() async {
+        _ = try? await send(Data([0x16, 0x01, 0x00]), timeout: 4, label: "ble mode reset")
+        _ = try? await send(
+            Data([0x31, 0x04, 0x00, 0x00, 0x00, 0x00]), timeout: 4, label: "ring mode reset"
+        )
+    }
+
     /// App auth is session-scoped: nonce challenge, AES-ECB encrypted with
     /// the ring's key, sent back for verification.
     private func authenticate(key: Data) async throws {
@@ -360,10 +399,12 @@ final class RingBLEClient: NSObject {
         // No expectTag here: filtering on 0x2f made auth start timing out on
         // the real ring, though it had worked when any reply was accepted.
         // parseNonce validates the shape instead.
-        let nonceResponse: Data
-        do {
-            nonceResponse = try await send(Data([0x2F, 0x01, 0x2B]), label: "auth nonce")
-        } catch {
+        var nonceResponse = try await send(Data([0x2F, 0x01, 0x2B]), label: "auth nonce")
+
+        // `17 01 xx` means the ring is in a leftover BLE/fast mode rather than
+        // issuing a nonce. Clear it and ask once more.
+        if nonceResponse.first == 0x17 {
+            await resetRingMode()
             nonceResponse = try await send(Data([0x2F, 0x01, 0x2B]), label: "auth nonce")
         }
         let nonce = try Self.parseNonce(nonceResponse)

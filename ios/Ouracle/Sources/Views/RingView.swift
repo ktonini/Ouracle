@@ -207,6 +207,16 @@ struct RingView: View {
             }
             .disabled(busy || streaming)
 
+            Button("Reset ring mode") {
+                Task {
+                    busy = true
+                    diagnostics = ["resetting…"]
+                    diagnostics = await RingBLEClient().resetAndVerify()
+                    busy = false
+                }
+            }
+            .disabled(busy || streaming)
+
             Button("Compare subscription modes") {
                 Task {
                     busy = true
