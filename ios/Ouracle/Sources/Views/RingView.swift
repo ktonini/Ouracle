@@ -131,7 +131,7 @@ struct RingView: View {
             Toggle(isOn: $fastMode) {
                 VStack(alignment: .leading, spacing: 2) {
                     Text("Continuous measurement")
-                    Text("Asks the ring to measure non-stop, like Oura's Live Heart Rate. Uses more battery; normal mode is restored when you stop.")
+                    Text("Asks the ring to measure non-stop. It accepts the request, but Ring 5 does not stream readings back over Bluetooth, so a value still only appears if the ring files one itself.")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
@@ -207,39 +207,11 @@ struct RingView: View {
             }
             .disabled(busy || streaming)
 
-            Button("Listen for realtime stream") {
-                Task {
-                    busy = true
-                    diagnostics = ["listening ~45s, keep the ring on and still…"]
-                    // mode 1 first; HR-specific flags as a second attempt.
-                    var out = await RingBLEClient().listenRealtime(payload: [0x01, 0x00, 0x00, 0x00])
-                    if !out.contains(where: { $0.contains("packets pushed") && !$0.hasSuffix(": 0") }) {
-                        out.append("=== retry with HR flags ===")
-                        out += await RingBLEClient().listenRealtime(
-                            payload: [0x01, 0x02, 0x00, 0x00], seconds: 30
-                        )
-                    }
-                    diagnostics = out
-                    busy = false
-                }
-            }
-            .disabled(busy || streaming)
-
             Button("Reset ring mode") {
                 Task {
                     busy = true
                     diagnostics = ["resetting…"]
                     diagnostics = await RingBLEClient().resetAndVerify()
-                    busy = false
-                }
-            }
-            .disabled(busy || streaming)
-
-            Button("Compare subscription modes") {
-                Task {
-                    busy = true
-                    diagnostics = ["running A/B, ~30s…"]
-                    diagnostics = await RingBLEClient.compareSubscriptionModes()
                     busy = false
                 }
             }
