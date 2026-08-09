@@ -15,6 +15,10 @@ import CommonCrypto
 import CoreBluetooth
 import Foundation
 
+extension Data {
+    var hexString: String { map { String(format: "%02x", $0) }.joined() }
+}
+
 struct RingInfo: Equatable {
     var apiVersion: String
     var firmware: String
@@ -76,6 +80,8 @@ final class RingBLEClient: NSObject {
     private var pendingSubscriptions = 0
     /// Ties each timeout timer to the request that scheduled it.
     private var requestGeneration: UInt64 = 0
+    private var capturing = false
+    private var captureLog: [String] = []
     private var discoveryContinuation: CheckedContinuation<CBPeripheral, Error>?
 
     override init() {
@@ -192,6 +198,59 @@ final class RingBLEClient: NSObject {
                 }
             }
         }
+    }
+
+    /// Connects and narrates every step, capturing raw notifications from all
+    /// characteristics. For diagnosing why a command goes unanswered.
+    func diagnose() async -> [String] {
+        var log: [String] = []
+        captureLog = []
+        capturing = true
+        defer { capturing = false }
+
+        do {
+            try await waitForPowerOn()
+            log.append("bluetooth: on")
+            let ring = try await findRing()
+            log.append("found: \(ring.name ?? "unnamed") \(ring.identifier.uuidString.prefix(8))")
+            log.append("state: \(ring.state == .connected ? "already connected" : "connecting")")
+            try await connect(ring)
+
+            if let service = peripheral?.services?.first(where: { $0.uuid == Self.serviceUUID }) {
+                for characteristic in service.characteristics ?? [] {
+                    var props: [String] = []
+                    if characteristic.properties.contains(.write) { props.append("write") }
+                    if characteristic.properties.contains(.writeWithoutResponse) { props.append("writeNR") }
+                    if characteristic.properties.contains(.notify) { props.append("notify") }
+                    if characteristic.properties.contains(.indicate) { props.append("indicate") }
+                    if characteristic.properties.contains(.read) { props.append("read") }
+                    log.append("char …\(characteristic.uuid.uuidString.prefix(8)): \(props.joined(separator: ","))")
+                }
+            }
+
+            // Unauthenticated command first: proves the request path works.
+            if let info = try? await send(Data([0x08, 0x03, 0x00, 0x00, 0x00]), timeout: 6, label: "info") {
+                log.append("firmware reply: \(info.prefix(12).hexString)")
+            } else {
+                log.append("firmware: NO REPLY")
+            }
+
+            // Then the nonce that has been timing out.
+            if let nonce = try? await send(Data([0x2F, 0x01, 0x2B]), timeout: 8, label: "nonce") {
+                log.append("nonce reply: \(nonce.prefix(20).hexString)")
+            } else {
+                log.append("nonce: NO REPLY")
+            }
+
+            disconnect()
+        } catch {
+            log.append("failed: \(error.localizedDescription)")
+            disconnect()
+        }
+
+        log.append("--- all notifications seen ---")
+        log.append(contentsOf: captureLog.isEmpty ? ["(none)"] : captureLog)
+        return log
     }
 
     /// Puts the ring into (or out of) continuous-measurement mode — the same
@@ -617,11 +676,17 @@ extension RingBLEClient: CBPeripheralDelegate {
         didUpdateValueFor characteristic: CBCharacteristic,
         error: Error?
     ) {
+        let value = characteristic.value ?? Data()
+        // Capture before any filtering, so unsolicited pushes are logged too.
+        if capturing {
+            captureLog.append(
+                "…\(characteristic.uuid.uuidString.suffix(12).prefix(4)) → \(value.prefix(20).hexString)"
+            )
+        }
         // Accept replies from any subscribed characteristic in the service.
         guard characteristic.uuid != Self.writeUUID,
               let pending = responseContinuation
         else { return }
-        let value = characteristic.value ?? Data()
         // Ignore unrelated pushes; keep waiting for the expected reply.
         if error == nil, let expectedTag, value.first != expectedTag {
             return

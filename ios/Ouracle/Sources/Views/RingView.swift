@@ -14,6 +14,7 @@ struct RingView: View {
     @State private var streamTask: Task<Void, Never>?
     @State private var features: [(name: String, on: Bool)] = []
     @State private var fastMode = true
+    @State private var diagnostics: [String] = []
     @State private var lastReadingAt: Date?
     @State private var keyDraft = ""
     @State private var keySaved = Keychain.has(account: "ring-auth-key")
@@ -187,6 +188,25 @@ struct RingView: View {
                     .labelStyle(.titleAndIcon)
                 }
             }
+            if !diagnostics.isEmpty {
+                VStack(alignment: .leading, spacing: 2) {
+                    ForEach(diagnostics, id: \.self) { line in
+                        Text(line)
+                            .font(.system(.caption2, design: .monospaced))
+                            .textSelection(.enabled)
+                    }
+                }
+            }
+            Button("Run connection diagnostic") {
+                Task {
+                    busy = true
+                    diagnostics = ["running…"]
+                    diagnostics = await RingBLEClient().diagnose()
+                    busy = false
+                }
+            }
+            .disabled(busy || streaming)
+
             Button("Check measurement features") {
                 Task {
                     busy = true
