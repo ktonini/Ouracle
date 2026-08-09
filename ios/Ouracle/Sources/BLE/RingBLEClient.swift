@@ -114,9 +114,14 @@ final class RingBLEClient: NSObject {
     /// Note this is a poll, not a push: the ring measures on its own schedule,
     /// so readings repeat until it takes a new one. Values only appear while
     /// the ring is worn.
+    /// - Parameter fastMode: asks the ring to measure continuously (what the
+    ///   Oura app's "Live Heart Rate" does). Without it the ring samples for
+    ///   one minute every five, only when still, so a reading can be up to
+    ///   ~30 minutes stale. Normal mode is always restored on exit.
     func streamHeartRate(
-        seconds: TimeInterval = 60,
-        pollInterval: TimeInterval = 2
+        seconds: TimeInterval = 600,
+        pollInterval: TimeInterval = 10,
+        fastMode: Bool = false
     ) -> AsyncThrowingStream<RingReading, Error> {
         AsyncThrowingStream { continuation in
             Task {
@@ -138,6 +143,9 @@ final class RingBLEClient: NSObject {
                     guard daytimeOn || exerciseOn || spo2On else {
                         throw RingBLEError.featuresOff
                     }
+
+                    // State-changing: ask the ring to measure continuously.
+                    if fastMode { await setFastMode(true) }
 
                     let deadline = Date().addingTimeInterval(seconds)
                     while Date() < deadline, !Task.isCancelled {
@@ -169,14 +177,27 @@ final class RingBLEClient: NSObject {
                         continuation.yield(reading)
                         try await Task.sleep(nanoseconds: UInt64(pollInterval * 1_000_000_000))
                     }
+                    // Restore before dropping the link — a disconnected
+                    // peripheral can't be told to go back to normal mode.
+                    if fastMode { await setFastMode(false) }
                     disconnect()
                     continuation.finish()
                 } catch {
+                    if fastMode { await setFastMode(false) }
                     disconnect()
                     continuation.finish(throwing: error)
                 }
             }
         }
+    }
+
+    /// Puts the ring into (or out of) continuous-measurement mode — the same
+    /// thing the Oura app's "Live Heart Rate" screen does. Best-effort: the
+    /// ring also reverts to normal on its own once the connection drops.
+    private func setFastMode(_ on: Bool) async {
+        let flag: UInt8 = on ? 0x01 : 0x00
+        _ = try? await send(Data([0x16, 0x01, flag]), expectTag: 0x17)
+        _ = try? await send(Data([0x31, 0x04, flag, 0x00, 0x00, 0x00]), expectTag: 0x32)
     }
 
     /// Reports each measurement feature's mode, so "no heart rate" can be

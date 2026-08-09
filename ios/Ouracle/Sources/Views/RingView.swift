@@ -13,6 +13,8 @@ struct RingView: View {
     @State private var streaming = false
     @State private var streamTask: Task<Void, Never>?
     @State private var features: [(name: String, on: Bool)] = []
+    @State private var fastMode = true
+    @State private var lastReadingAt: Date?
     @State private var keyDraft = ""
     @State private var keySaved = Keychain.has(account: "ring-auth-key")
 
@@ -119,17 +121,35 @@ struct RingView: View {
                     .frame(height: 38)
             }
 
+            if let lastReadingAt, !streaming {
+                Text("Last reading \(lastReadingAt.formatted(.relative(presentation: .named)))")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+
+            Toggle(isOn: $fastMode) {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Continuous measurement")
+                    Text("Asks the ring to measure non-stop, like Oura's Live Heart Rate. Uses more battery; normal mode is restored when you stop.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+            }
+            .disabled(streaming)
+
             Button {
                 streaming ? stopStream() : startStream()
             } label: {
                 Label(
-                    streaming ? "Stop" : "Start live reading",
+                    streaming ? "Stop" : (fastMode ? "Start live reading" : "Check for a reading"),
                     systemImage: streaming ? "stop.fill" : "play.fill"
                 )
             }
             .disabled(busy || !keySaved)
 
-            Text("The ring measures on its own schedule, so a value appears once it takes a reading — wear it and keep still for best results.")
+            Text(fastMode
+                 ? "Wear the ring and keep your hand still — a value should appear within a minute."
+                 : "Left to itself the ring measures for a minute every five, only when you're still, so a reading can be up to 30 minutes old.")
                 .font(.footnote)
                 .foregroundStyle(.secondary)
         }
@@ -229,16 +249,27 @@ struct RingView: View {
         history = []
         streamTask = Task {
             do {
-                for try await value in RingBLEClient().streamHeartRate(seconds: 120) {
-                    reading = value
+                let stream = RingBLEClient().streamHeartRate(
+                    seconds: fastMode ? 300 : 600,
+                    pollInterval: fastMode ? 3 : 10,
+                    fastMode: fastMode
+                )
+                for try await value in stream {
+                    // Keep the last real value on screen rather than blanking
+                    // between the ring's measurements.
                     if let bpm = value.bpm {
+                        reading = value
+                        lastReadingAt = .now
                         history.append(bpm)
                         if history.count > 60 { history.removeFirst() }
                         status = nil
                     } else {
+                        reading?.spo2Percent = value.spo2Percent ?? reading?.spo2Percent
                         status = value.measuring
-                            ? "Ring is measuring — waiting for a value…"
-                            : "No recent reading. Make sure the ring is worn."
+                            ? "Ring is measuring — waiting for a beat…"
+                            : (fastMode
+                               ? "Waiting for the ring to measure — keep your hand still."
+                               : "No recent measurement yet. Turn on continuous measurement for an immediate reading.")
                     }
                 }
             } catch {
