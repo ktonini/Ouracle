@@ -1,6 +1,13 @@
 import SwiftUI
 
 struct SettingsView: View {
+    static var versionString: String {
+        let info = Bundle.main.infoDictionary
+        let version = info?["CFBundleShortVersionString"] as? String ?? "?"
+        let build = info?["CFBundleVersion"] as? String ?? "?"
+        return "\(version) (\(build))"
+    }
+
     @EnvironmentObject var store: AppStore
     @State private var urlDraft = ""
     @State private var tokenDraft = ""
@@ -109,6 +116,12 @@ struct SettingsView: View {
                     Text("Writes sleep stages, nightly HRV, and resting heart rate. Re-exports update rather than duplicate.")
                         .font(.footnote)
                         .foregroundStyle(.secondary)
+                }
+
+                Section {
+                    LabeledContent("Version", value: Self.versionString)
+                } footer: {
+                    Text("Build number confirms which TestFlight build is installed.")
                 }
 
                 if let refreshed = store.lastRefreshed {
