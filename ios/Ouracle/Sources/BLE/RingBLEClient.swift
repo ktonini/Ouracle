@@ -64,6 +64,7 @@ enum RingBLEError: LocalizedError {
     }
 }
 
+@MainActor
 final class RingBLEClient: NSObject {
     static let serviceUUID = CBUUID(string: "98ED0001-A541-11E4-B6A0-0002A5D5C51B")
     static let writeUUID = CBUUID(string: "98ED0002-A541-11E4-B6A0-0002A5D5C51B")
@@ -585,7 +586,7 @@ final class RingBLEClient: NSObject {
         if result[3] != 0x00 { throw RingBLEError.authFailed }
     }
 
-    static func storedAuthKey() -> Data? {
+    nonisolated static func storedAuthKey() -> Data? {
         guard let hex = Keychain.read(account: "ring-auth-key"), !hex.isEmpty else {
             return nil
         }
@@ -596,7 +597,7 @@ final class RingBLEClient: NSObject {
 
     /// AES-128-ECB with PKCS7 padding (PKCS5 in the protocol docs — same
     /// thing for 16-byte blocks).
-    static func aesECBEncrypt(_ plaintext: Data, key: Data) throws -> Data {
+    nonisolated static func aesECBEncrypt(_ plaintext: Data, key: Data) throws -> Data {
         let capacity = plaintext.count + kCCBlockSizeAES128
         var output = Data(count: capacity)
         var moved = 0
@@ -625,7 +626,7 @@ final class RingBLEClient: NSObject {
     // MARK: - Response parsing
 
     /// Payload layout: api(3) firmware(3) bootloader(3) btStack(3) mac(6, reversed)
-    static func parseFirmware(_ response: Data) throws -> RingInfo {
+    nonisolated static func parseFirmware(_ response: Data) throws -> RingInfo {
         guard response.count >= 2, response[0] == 0x09 else {
             throw RingBLEError.badResponse("tag \(response.first.map { String($0, radix: 16) } ?? "none")")
         }
@@ -654,7 +655,7 @@ final class RingBLEClient: NSObject {
     /// History events use tags ≥ 0x41 and start with a little-endian
     /// deciseconds timestamp; tag 0x11 is the batch summary carrying
     /// `bytes_left`, which drives the drain loop.
-    static func ingest(_ packet: Data, into batch: inout EventBatch) {
+    nonisolated static func ingest(_ packet: Data, into batch: inout EventBatch) {
         guard packet.count >= 2 else { return }
         let tag = packet[0]
         let payload = packet.dropFirst(2)
@@ -677,7 +678,7 @@ final class RingBLEClient: NSObject {
     }
 
     /// Nonce response: `2f 10 2c <15-byte nonce>`
-    static func parseNonce(_ response: Data) throws -> Data {
+    nonisolated static func parseNonce(_ response: Data) throws -> Data {
         guard response.count >= 3, response[0] == 0x2F, response[2] == 0x2C else {
             throw RingBLEError.badResponse(
                 "nonce " + response.prefix(4).map { String(format: "%02x", $0) }.joined()
@@ -698,7 +699,7 @@ final class RingBLEClient: NSObject {
         return Self.parseFeatureMode(response, feature: feature).map { $0 != 0 } ?? false
     }
 
-    static func parseFeatureMode(_ response: Data, feature: UInt8) -> UInt8? {
+    nonisolated static func parseFeatureMode(_ response: Data, feature: UInt8) -> UInt8? {
         guard response.count >= 5, response[0] == 0x2F, response[2] == 0x21,
               response[3] == feature
         else { return nil }
@@ -707,7 +708,7 @@ final class RingBLEClient: NSObject {
 
     /// Exercise HR: bpm sits at data[4] rather than being derived from an
     /// inter-beat interval.
-    static func parseLatestExerciseHR(_ response: Data) throws -> RingReading {
+    nonisolated static func parseLatestExerciseHR(_ response: Data) throws -> RingReading {
         let (data, state) = try latestPayload(response, feature: 0x03)
         guard data.count >= 5 else { return RingReading() }
         let bpm = Int(data[4])
@@ -719,7 +720,7 @@ final class RingBLEClient: NSObject {
 
     /// Feature-latest response: `2f <len> 25 <feature> <result> <status>
     /// <state> <counter:2> <data…>` — so feature data starts at byte 9.
-    static func latestPayload(_ response: Data, feature: UInt8) throws -> (data: Data, state: UInt8) {
+    nonisolated static func latestPayload(_ response: Data, feature: UInt8) throws -> (data: Data, state: UInt8) {
         if response.count >= 4, response[0] == 0x2F, response[2] == 0x2F {
             throw RingBLEError.authFailed  // 2f022f01 = auth required
         }
@@ -735,7 +736,7 @@ final class RingBLEClient: NSObject {
 
     /// Daytime HR: first two data bytes are the RR-corrected inter-beat
     /// interval in ms; bpm = 60000 / ibi. Zero means "no recent measurement".
-    static func parseLatestHeartRate(_ response: Data) -> RingReading {
+    nonisolated static func parseLatestHeartRate(_ response: Data) -> RingReading {
         guard let (data, state) = try? latestPayload(response, feature: 0x02),
               data.count >= 2
         else { return RingReading() }
@@ -747,7 +748,7 @@ final class RingBLEClient: NSObject {
     }
 
     /// SpO2 feature: data[3] = SpO2 %, data[4] = bpm.
-    static func parseLatestSpO2(_ response: Data) throws -> RingReading {
+    nonisolated static func parseLatestSpO2(_ response: Data) throws -> RingReading {
         let (data, state) = try latestPayload(response, feature: 0x04)
         guard data.count >= 5 else { return RingReading() }
         let spo2 = Int(data[3])
@@ -760,7 +761,7 @@ final class RingBLEClient: NSObject {
     }
 
     /// Battery response: `0d <len> <percent> <charging progress> …`
-    static func parseBattery(_ response: Data) throws -> RingBattery {
+    nonisolated static func parseBattery(_ response: Data) throws -> RingBattery {
         // Auth-gated refusal comes back as 2f022f01.
         if response.count >= 4, response[0] == 0x2F, response[2] == 0x2F {
             throw RingBLEError.authFailed
@@ -880,155 +881,174 @@ final class RingBLEClient: NSObject {
     }
 }
 
+// CoreBluetooth delivers these on the main queue (see the CBCentralManager
+// init), so they are nonisolated entry points that assume main-actor
+// isolation rather than hopping — which also keeps all mutable state
+// single-threaded. Reading it from both a delegate callback and an async
+// method was crashing the app on Swift's exclusivity checks.
 extension RingBLEClient: CBCentralManagerDelegate {
-    func centralManagerDidUpdateState(_ central: CBCentralManager) {
-        guard let pending = powerOnContinuation else { return }
-        powerOnContinuation = nil
-        if central.state == .poweredOn {
-            pending.resume()
-        } else {
-            pending.resume(throwing: RingBLEError.unavailable(stateDescription))
+    nonisolated func centralManagerDidUpdateState(_ central: CBCentralManager) {
+        MainActor.assumeIsolated {
+            guard let pending = powerOnContinuation else { return }
+            powerOnContinuation = nil
+            if central.state == .poweredOn {
+                pending.resume()
+            } else {
+                pending.resume(throwing: RingBLEError.unavailable(stateDescription))
+            }
         }
     }
 
-    func centralManager(
+    nonisolated func centralManager(
         _ central: CBCentralManager,
         didDiscover peripheral: CBPeripheral,
         advertisementData: [String: Any],
         rssi RSSI: NSNumber
     ) {
-        guard let pending = discoveryContinuation else { return }
-        discoveryContinuation = nil
-        central.stopScan()
-        pending.resume(returning: peripheral)
+        MainActor.assumeIsolated {
+            guard let pending = discoveryContinuation else { return }
+            discoveryContinuation = nil
+            central.stopScan()
+            pending.resume(returning: peripheral)
+        }
     }
 
-    func centralManager(_ central: CBCentralManager, didConnect peripheral: CBPeripheral) {
-        peripheral.discoverServices([Self.serviceUUID])
+    nonisolated func centralManager(_ central: CBCentralManager, didConnect peripheral: CBPeripheral) {
+        MainActor.assumeIsolated {
+            peripheral.discoverServices([Self.serviceUUID])
+        }
     }
 
-    func centralManager(
+    nonisolated func centralManager(
         _ central: CBCentralManager,
         didFailToConnect peripheral: CBPeripheral,
         error: Error?
     ) {
-        guard let pending = connectContinuation else { return }
-        connectContinuation = nil
-        pending.resume(throwing: error ?? RingBLEError.timeout("connect"))
+        MainActor.assumeIsolated {
+            guard let pending = connectContinuation else { return }
+            connectContinuation = nil
+            pending.resume(throwing: error ?? RingBLEError.timeout("connect"))
+        }
     }
 }
 
 extension RingBLEClient: CBPeripheralDelegate {
-    func peripheral(_ peripheral: CBPeripheral, didDiscoverServices error: Error?) {
-        guard let service = peripheral.services?.first(where: { $0.uuid == Self.serviceUUID })
-        else {
-            failConnect(error ?? RingBLEError.notFound)
-            return
+    nonisolated func peripheral(_ peripheral: CBPeripheral, didDiscoverServices error: Error?) {
+        MainActor.assumeIsolated {
+            guard let service = peripheral.services?.first(where: { $0.uuid == Self.serviceUUID })
+            else {
+                failConnect(error ?? RingBLEError.notFound)
+                return
+            }
+            // Discover everything: Ring 5 exposes extra notify characteristics
+            // (…0004/0005/0006) that Ring 3 lacks, and some responses arrive on
+            // them. Subscribing only to …0003 makes those replies look like
+            // timeouts.
+            peripheral.discoverCharacteristics(nil, for: service)
         }
-        // Discover everything: Ring 5 exposes extra notify characteristics
-        // (…0004/0005/0006) that Ring 3 lacks, and some responses arrive on
-        // them. Subscribing only to …0003 makes those replies look like
-        // timeouts.
-        peripheral.discoverCharacteristics(nil, for: service)
     }
 
-    func peripheral(
+    nonisolated func peripheral(
         _ peripheral: CBPeripheral,
         didDiscoverCharacteristicsFor service: CBService,
         error: Error?
     ) {
-        guard let characteristics = service.characteristics else {
-            failConnect(error ?? RingBLEError.notFound)
-            return
-        }
-        writeChar = characteristics.first { $0.uuid == Self.writeUUID }
-        let subscribable = characteristics.filter {
-            guard $0.properties.contains(.notify) || $0.properties.contains(.indicate)
-            else { return false }
-            // Subscribing to the extra Ring 5 channels (0004/0005/0006) is
-            // suspected of putting the ring into a state where it stops
-            // servicing ATT requests; primaryOnly restricts us to 0003.
-            return subscribePrimaryOnly ? $0.uuid == Self.notifyUUID : true
-        }
-        pendingSubscriptions = subscribable.count
-        for characteristic in subscribable {
-            peripheral.setNotifyValue(true, for: characteristic)
-        }
-        // Do NOT resume yet: setNotifyValue is asynchronous, and writing a
-        // request before the subscriptions are live means the reply is never
-        // delivered — which looks exactly like a response timeout.
-        if subscribable.isEmpty {
-            failConnect(RingBLEError.notFound)
+        MainActor.assumeIsolated {
+            guard let characteristics = service.characteristics else {
+                failConnect(error ?? RingBLEError.notFound)
+                return
+            }
+            writeChar = characteristics.first { $0.uuid == Self.writeUUID }
+            let subscribable = characteristics.filter {
+                guard $0.properties.contains(.notify) || $0.properties.contains(.indicate)
+                else { return false }
+                return subscribePrimaryOnly ? $0.uuid == Self.notifyUUID : true
+            }
+            pendingSubscriptions = subscribable.count
+            for characteristic in subscribable {
+                peripheral.setNotifyValue(true, for: characteristic)
+            }
+            // Do NOT resume yet: setNotifyValue is asynchronous, and writing a
+            // request before the subscriptions are live means the reply is
+            // never delivered — which looks exactly like a response timeout.
+            if subscribable.isEmpty {
+                failConnect(RingBLEError.notFound)
+            }
         }
     }
 
-    func peripheral(
+    nonisolated func peripheral(
         _ peripheral: CBPeripheral,
         didUpdateNotificationStateFor characteristic: CBCharacteristic,
         error: Error?
     ) {
-        pendingSubscriptions = max(pendingSubscriptions - 1, 0)
-        guard pendingSubscriptions == 0, let pending = connectContinuation else { return }
-        connectContinuation = nil
-        if writeChar == nil {
-            pending.resume(throwing: RingBLEError.notFound)
-        } else {
-            pending.resume()
+        MainActor.assumeIsolated {
+            pendingSubscriptions = max(pendingSubscriptions - 1, 0)
+            guard pendingSubscriptions == 0, let pending = connectContinuation else { return }
+            connectContinuation = nil
+            if writeChar == nil {
+                pending.resume(throwing: RingBLEError.notFound)
+            } else {
+                pending.resume()
+            }
         }
     }
 
     /// Write acknowledgements. A failed write (commonly "Encryption is
     /// insufficient" when the link isn't secured yet) is otherwise invisible
     /// and looks identical to the ring ignoring us.
-    func peripheral(
+    nonisolated func peripheral(
         _ peripheral: CBPeripheral,
         didWriteValueFor characteristic: CBCharacteristic,
         error: Error?
     ) {
-        if capturing {
-            captureLog.append(
-                "write ack \(characteristic.uuid.uuidString.prefix(8)): \(error.map { "ERROR \($0.localizedDescription)" } ?? "ok")"
+        MainActor.assumeIsolated {
+            if capturing {
+                captureLog.append(
+                    "write ack \(characteristic.uuid.uuidString.prefix(8)): \(error.map { "ERROR \($0.localizedDescription)" } ?? "ok")"
+                )
+            }
+            guard let error, let pending = responseContinuation else { return }
+            responseContinuation = nil
+            expectedTag = nil
+            pending.resume(
+                throwing: RingBLEError.badResponse("write failed: \(error.localizedDescription)")
             )
         }
-        guard let error, let pending = responseContinuation else { return }
-        responseContinuation = nil
-        expectedTag = nil
-        pending.resume(throwing: RingBLEError.badResponse("write failed: \(error.localizedDescription)"))
     }
 
-    func peripheral(
+    nonisolated func peripheral(
         _ peripheral: CBPeripheral,
         didUpdateValueFor characteristic: CBCharacteristic,
         error: Error?
     ) {
-        let value = characteristic.value ?? Data()
-        // Capture before any filtering, so unsolicited pushes are logged too.
-        if capturing {
-            captureLog.append(
-                // These UUIDs differ in their FIRST block; the tail is shared.
-                "\(characteristic.uuid.uuidString.prefix(8)) → \(value.prefix(20).hexString)"
-            )
-        }
-        // History drain: frames arrive pushed, terminated by an 0x11 summary.
-        if collectingEvents, characteristic.uuid != Self.writeUUID {
-            Self.ingest(value, into: &batch)
-            return
-        }
-
-        // Accept replies from any subscribed characteristic in the service.
-        guard characteristic.uuid != Self.writeUUID,
-              let pending = responseContinuation
-        else { return }
-        // Ignore unrelated pushes; keep waiting for the expected reply.
-        if error == nil, let expectedTag, value.first != expectedTag {
-            return
-        }
-        responseContinuation = nil
-        expectedTag = nil
-        if let error {
-            pending.resume(throwing: error)
-        } else {
-            pending.resume(returning: value)
+        MainActor.assumeIsolated {
+            let value = characteristic.value ?? Data()
+            // Capture before any filtering, so unsolicited pushes are logged too.
+            if capturing {
+                captureLog.append(
+                    "\(characteristic.uuid.uuidString.prefix(8)) → \(value.prefix(20).hexString)"
+                )
+            }
+            // History drain: frames arrive pushed, ended by an 0x11 summary.
+            if collectingEvents, characteristic.uuid != Self.writeUUID {
+                Self.ingest(value, into: &batch)
+                return
+            }
+            guard characteristic.uuid != Self.writeUUID,
+                  let pending = responseContinuation
+            else { return }
+            // Ignore unrelated pushes; keep waiting for the expected reply.
+            if error == nil, let expectedTag, value.first != expectedTag {
+                return
+            }
+            responseContinuation = nil
+            expectedTag = nil
+            if let error {
+                pending.resume(throwing: error)
+            } else {
+                pending.resume(returning: value)
+            }
         }
     }
 
