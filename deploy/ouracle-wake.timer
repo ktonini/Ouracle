@@ -5,7 +5,12 @@
 Description=Ouracle wake report window
 
 [Timer]
+# Every 15 min through the morning, when a night is usually published…
 OnCalendar=*-*-* 04..12:0/15:00
+# …then hourly into the evening. Oura sometimes classifies a night hours
+# late, and the old 04:00–12:45 window simply closed before the data existed,
+# so those mornings never produced a notification.
+OnCalendar=*-*-* 13..21:00:00
 Persistent=false
 
 [Install]

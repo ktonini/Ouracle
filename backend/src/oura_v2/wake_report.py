@@ -14,7 +14,7 @@ from __future__ import annotations
 import argparse
 import logging
 import sys
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from typing import List, Optional
 
 from sqlalchemy.orm import Session
@@ -151,15 +151,22 @@ def main(argv: Optional[List[str]] = None) -> int:
         db = SessionLocal()
         try:
             run_sync(db, client, only=SLEEP_COLLECTIONS)
-            # Server runs in local time; "today" is the wake-up day.
+            # Server runs in local time; "today" is the wake-up day. Also try
+            # yesterday: Oura sometimes classifies a night hours late, and a
+            # night that lands after midnight would otherwise never be
+            # reported at all.
             today = datetime.now().date()
-            message = report_for_day(db, today, force=args.force)
-            if message is None:
-                logger.info("No new sleep to report for %s.", today)
+            for day in (today, today - timedelta(days=1)):
+                message = report_for_day(db, day, force=args.force)
+                if message is None:
+                    continue
+                title = "Last night" if day == today else day.strftime("Night of %a %d %b")
+                if notify(db, title, message):
+                    mark_sent(db, day)
+                    logger.info("Wake report sent for %s.", day)
                 return 0
-            if notify(db, "Last night", message):
-                mark_sent(db, today)
-                logger.info("Wake report sent for %s.", today)
+
+            logger.info("No new sleep to report for %s.", today)
         finally:
             db.close()
     except CredentialError as e:

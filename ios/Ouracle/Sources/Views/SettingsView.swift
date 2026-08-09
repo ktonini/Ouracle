@@ -69,7 +69,7 @@ struct SettingsView: View {
                         Label {
                             VStack(alignment: .leading, spacing: 2) {
                                 Text("Ring")
-                                Text("Battery, live heart rate, device info")
+                                Text("Battery and device info")
                                     .font(.caption)
                                     .foregroundStyle(.secondary)
                             }
