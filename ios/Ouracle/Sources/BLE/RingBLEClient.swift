@@ -73,6 +73,7 @@ final class RingBLEClient: NSObject {
     private var connectContinuation: CheckedContinuation<Void, Error>?
     private var responseContinuation: CheckedContinuation<Data, Error>?
     private var expectedTag: UInt8?
+    private var pendingSubscriptions = 0
     private var discoveryContinuation: CheckedContinuation<CBPeripheral, Error>?
 
     override init() {
@@ -90,7 +91,7 @@ final class RingBLEClient: NSObject {
         defer { disconnect() }
 
         // 0x08 "get firmware": tag 08, len 03, payload 00 00 00
-        let response = try await send(Data([0x08, 0x03, 0x00, 0x00, 0x00]))
+        let response = try await send(Data([0x08, 0x03, 0x00, 0x00, 0x00]), label: "device info")
         return try Self.parseFirmware(response)
     }
 
@@ -104,7 +105,7 @@ final class RingBLEClient: NSObject {
 
         try await authenticate(key: key)
         // 0x0C "get battery"
-        let response = try await send(Data([0x0C, 0x00]), expectTag: 0x0D)
+        let response = try await send(Data([0x0C, 0x00]), expectTag: 0x0D, label: "battery read")
         return try Self.parseBattery(response)
     }
 
@@ -153,13 +154,13 @@ final class RingBLEClient: NSObject {
 
                         // 0x2f/0x24 feature-latest; 0x02 daytime HR.
                         if daytimeOn,
-                           let hr = try? await send(Data([0x2F, 0x02, 0x24, 0x02]), expectTag: 0x2F)
+                           let hr = try? await send(Data([0x2F, 0x02, 0x24, 0x02]), expectTag: 0x2F, label: "latest value")
                         {
                             reading = Self.parseLatestHeartRate(hr)
                         }
                         // Exercise HR reports bpm directly.
                         if reading.bpm == nil, exerciseOn,
-                           let ex = try? await send(Data([0x2F, 0x02, 0x24, 0x03]), expectTag: 0x2F),
+                           let ex = try? await send(Data([0x2F, 0x02, 0x24, 0x03]), expectTag: 0x2F, label: "latest value"),
                            let parsed = try? Self.parseLatestExerciseHR(ex)
                         {
                             reading.bpm = parsed.bpm
@@ -167,7 +168,7 @@ final class RingBLEClient: NSObject {
                         }
                         // SpO2 carries a bpm sample alongside saturation.
                         if spo2On,
-                           let spo2 = try? await send(Data([0x2F, 0x02, 0x24, 0x04]), expectTag: 0x2F),
+                           let spo2 = try? await send(Data([0x2F, 0x02, 0x24, 0x04]), expectTag: 0x2F, label: "latest value"),
                            let parsed = try? Self.parseLatestSpO2(spo2)
                         {
                             reading.spo2Percent = parsed.spo2Percent
@@ -196,8 +197,10 @@ final class RingBLEClient: NSObject {
     /// ring also reverts to normal on its own once the connection drops.
     private func setFastMode(_ on: Bool) async {
         let flag: UInt8 = on ? 0x01 : 0x00
-        _ = try? await send(Data([0x16, 0x01, flag]), expectTag: 0x17)
-        _ = try? await send(Data([0x31, 0x04, flag, 0x00, 0x00, 0x00]), expectTag: 0x32)
+        // Short timeouts: the ring-mode command's ack shape isn't documented,
+        // so a missing reply must not stall the session.
+        _ = try? await send(Data([0x16, 0x01, flag]), expectTag: 0x17, timeout: 4)
+        _ = try? await send(Data([0x31, 0x04, flag, 0x00, 0x00, 0x00]), timeout: 4)
     }
 
     /// Reports each measurement feature's mode, so "no heart rate" can be
@@ -222,13 +225,20 @@ final class RingBLEClient: NSObject {
     /// App auth is session-scoped: nonce challenge, AES-ECB encrypted with
     /// the ring's key, sent back for verification.
     private func authenticate(key: Data) async throws {
-        let nonceResponse = try await send(Data([0x2F, 0x01, 0x2B]))
+        // One retry: the ring occasionally ignores the first request on a
+        // freshly established link.
+        let nonceResponse: Data
+        do {
+            nonceResponse = try await send(Data([0x2F, 0x01, 0x2B]), expectTag: 0x2F, label: "auth nonce")
+        } catch {
+            nonceResponse = try await send(Data([0x2F, 0x01, 0x2B]), expectTag: 0x2F, label: "auth nonce")
+        }
         let nonce = try Self.parseNonce(nonceResponse)
         let encrypted = try Self.aesECBEncrypt(nonce, key: key)
 
         var request = Data([0x2F, UInt8(encrypted.count + 1), 0x2D])
         request.append(encrypted)
-        let result = try await send(request)
+        let result = try await send(request, expectTag: 0x2F, label: "auth verify")
 
         // 2f022e00 = success, 2f022e01 = wrong key
         guard result.count >= 4, result[2] == 0x2E else {
@@ -319,7 +329,7 @@ final class RingBLEClient: NSObject {
     /// <status> <state> <subscription>`. Mode 0 means the feature is off, so
     /// the ring will never answer a latest-value request for it.
     private func featureEnabled(_ feature: UInt8) async throws -> Bool {
-        let response = try await send(Data([0x2F, 0x02, 0x20, feature]), expectTag: 0x2F)
+        let response = try await send(Data([0x2F, 0x02, 0x20, feature]), expectTag: 0x2F, label: "feature status")
         return Self.parseFeatureMode(response, feature: feature).map { $0 != 0 } ?? false
     }
 
@@ -454,7 +464,10 @@ final class RingBLEClient: NSObject {
     /// Writes a request and waits for the matching reply. `expectTag` filters
     /// out unrelated notifications (the ring pushes its own packets, and
     /// several characteristics are subscribed).
-    private func send(_ packet: Data, expectTag: UInt8? = nil) async throws -> Data {
+    private func send(
+        _ packet: Data, expectTag: UInt8? = nil, timeout: TimeInterval = 12,
+        label: String = "response"
+    ) async throws -> Data {
         guard let peripheral, let writeChar else {
             throw RingBLEError.timeout("characteristic discovery")
         }
@@ -464,11 +477,11 @@ final class RingBLEClient: NSObject {
         return try await withCheckedThrowingContinuation { continuation in
             responseContinuation = continuation
             peripheral.writeValue(packet, for: writeChar, type: writeType)
-            DispatchQueue.main.asyncAfter(deadline: .now() + 12) { [weak self] in
+            DispatchQueue.main.asyncAfter(deadline: .now() + timeout) { [weak self] in
                 guard let self, let pending = self.responseContinuation else { return }
                 self.responseContinuation = nil
                 self.expectedTag = nil
-                pending.resume(throwing: RingBLEError.timeout("response"))
+                pending.resume(throwing: RingBLEError.timeout(label))
             }
         }
     }
@@ -556,15 +569,32 @@ extension RingBLEClient: CBPeripheralDelegate {
             return
         }
         writeChar = characteristics.first { $0.uuid == Self.writeUUID }
-        for characteristic in characteristics
-        where characteristic.properties.contains(.notify)
-            || characteristic.properties.contains(.indicate)
-        {
+        let subscribable = characteristics.filter {
+            $0.properties.contains(.notify) || $0.properties.contains(.indicate)
+        }
+        pendingSubscriptions = subscribable.count
+        for characteristic in subscribable {
             peripheral.setNotifyValue(true, for: characteristic)
         }
-        // Ready once both directions exist; notify subscription confirms below.
-        if writeChar != nil, let pending = connectContinuation {
-            connectContinuation = nil
+        // Do NOT resume yet: setNotifyValue is asynchronous, and writing a
+        // request before the subscriptions are live means the reply is never
+        // delivered — which looks exactly like a response timeout.
+        if subscribable.isEmpty {
+            failConnect(RingBLEError.notFound)
+        }
+    }
+
+    func peripheral(
+        _ peripheral: CBPeripheral,
+        didUpdateNotificationStateFor characteristic: CBCharacteristic,
+        error: Error?
+    ) {
+        pendingSubscriptions = max(pendingSubscriptions - 1, 0)
+        guard pendingSubscriptions == 0, let pending = connectContinuation else { return }
+        connectContinuation = nil
+        if writeChar == nil {
+            pending.resume(throwing: RingBLEError.notFound)
+        } else {
             pending.resume()
         }
     }
