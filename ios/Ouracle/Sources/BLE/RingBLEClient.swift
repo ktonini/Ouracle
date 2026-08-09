@@ -229,18 +229,21 @@ final class RingBLEClient: NSObject {
     private func authenticate(key: Data) async throws {
         // One retry: the ring occasionally ignores the first request on a
         // freshly established link.
+        // No expectTag here: filtering on 0x2f made auth start timing out on
+        // the real ring, though it had worked when any reply was accepted.
+        // parseNonce validates the shape instead.
         let nonceResponse: Data
         do {
-            nonceResponse = try await send(Data([0x2F, 0x01, 0x2B]), expectTag: 0x2F, label: "auth nonce")
+            nonceResponse = try await send(Data([0x2F, 0x01, 0x2B]), label: "auth nonce")
         } catch {
-            nonceResponse = try await send(Data([0x2F, 0x01, 0x2B]), expectTag: 0x2F, label: "auth nonce")
+            nonceResponse = try await send(Data([0x2F, 0x01, 0x2B]), label: "auth nonce")
         }
         let nonce = try Self.parseNonce(nonceResponse)
         let encrypted = try Self.aesECBEncrypt(nonce, key: key)
 
         var request = Data([0x2F, UInt8(encrypted.count + 1), 0x2D])
         request.append(encrypted)
-        let result = try await send(request, expectTag: 0x2F, label: "auth verify")
+        let result = try await send(request, label: "auth verify")
 
         // 2f022e00 = success, 2f022e01 = wrong key
         guard result.count >= 4, result[2] == 0x2E else {
