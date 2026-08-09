@@ -219,6 +219,54 @@ final class RingBLEClient: NSObject {
         return log
     }
 
+    /// Enables realtime measurement and listens for *pushed* packets.
+    ///
+    /// The polling path reads a "latest value" register, which stays empty
+    /// even while the ring reports it is measuring. Ring 5 is known to stream
+    /// realtime data (open_oura captured ~50 Hz accelerometer), so readings
+    /// likely arrive as unsolicited notifications instead.
+    func listenRealtime(payload: [UInt8], seconds: TimeInterval = 45) async -> [String] {
+        var log = ["realtime flags: \(Data(payload).hexString)"]
+        captureLog = []
+        capturing = true
+        defer { capturing = false }
+
+        do {
+            guard let key = Self.storedAuthKey() else { throw RingBLEError.noAuthKey }
+            try await waitForPowerOn()
+            let ring = try await findRing()
+            try await connect(ring)
+            try await authenticate(key: key)
+            log.append("authenticated ✅")
+
+            // Continuous mode first, then realtime streaming.
+            await setFastMode(true)
+            let enable = try? await send(
+                Data([0x06, 0x04] + payload), timeout: 5, label: "realtime on"
+            )
+            log.append("realtime ack: \(enable?.hexString ?? "none")")
+
+            let before = captureLog.count
+            try? await Task.sleep(nanoseconds: UInt64(seconds * 1_000_000_000))
+            let pushed = captureLog.count - before
+            log.append("packets pushed in \(Int(seconds))s: \(pushed)")
+
+            _ = try? await send(Data([0x06, 0x04, 0x00, 0x00, 0x00, 0x00]), timeout: 4, label: "realtime off")
+            await setFastMode(false)
+            disconnect()
+        } catch {
+            log.append("failed: \(error.localizedDescription)")
+            _ = try? await send(Data([0x06, 0x04, 0x00, 0x00, 0x00, 0x00]), timeout: 3, label: "realtime off")
+            await setFastMode(false)
+            disconnect()
+        }
+
+        log.append("--- traffic ---")
+        // Cap the dump; a real stream would flood the screen.
+        log += captureLog.suffix(14)
+        return log
+    }
+
     /// Clears leftover ring modes and reports whether auth works afterwards.
     func resetAndVerify() async -> [String] {
         var log: [String] = []
