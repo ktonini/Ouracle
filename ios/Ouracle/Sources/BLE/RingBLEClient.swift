@@ -82,6 +82,8 @@ final class RingBLEClient: NSObject {
     private var requestGeneration: UInt64 = 0
     private var capturing = false
     private var captureLog: [String] = []
+    private var collectingEvents = false
+    private var batch = EventBatch()
     /// Subscribe only to the primary notify characteristic (Ring 3 behaviour).
     var subscribePrimaryOnly = false
     private var discoveryContinuation: CheckedContinuation<CBPeripheral, Error>?
@@ -217,6 +219,102 @@ final class RingBLEClient: NSObject {
         let full = RingBLEClient()
         log += await full.probe()
         return log
+    }
+
+    /// One history frame as it came off the ring, undecoded.
+    struct RawRingEvent {
+        let tag: UInt8
+        /// Ring clock, deciseconds (100 ms units).
+        let timestamp: UInt32
+        let body: Data
+    }
+
+    struct EventBatch {
+        var events: [RawRingEvent] = []
+        var bytesLeft: UInt32 = 0
+        var sawSummary = false
+    }
+
+    /// Drains the ring's history buffer from `cursor`, following the ring's
+    /// own protocol: request a batch, collect pushed event frames (tag ≥ 0x41)
+    /// until the 0x11 summary arrives, then repeat while `bytes_left > 0`.
+    ///
+    /// Returns raw frames — decoding happens server-side so it can be improved
+    /// without re-reading the ring, whose buffer is finite.
+    func syncHistory(
+        from cursor: UInt32,
+        maxBatches: Int = 40,
+        onProgress: @escaping (Int, UInt32) -> Void = { _, _ in }
+    ) async throws -> (events: [RawRingEvent], nextCursor: UInt32) {
+        guard let key = Self.storedAuthKey() else { throw RingBLEError.noAuthKey }
+        try await waitForPowerOn()
+        let ring = try await findRing()
+        try await connect(ring)
+        defer { disconnect() }
+        try await authenticate(key: key)
+
+        // The app's own handshake does these before draining: set the ring
+        // clock, then enable async notifications (events are pushed).
+        let now = UInt64(Date().timeIntervalSince1970)
+        var timePayload = Data([0x12, 0x09])
+        withUnsafeBytes(of: now.littleEndian) { timePayload.append(contentsOf: $0) }
+        timePayload.append(UInt8(TimeZone.current.secondsFromGMT() / 1800) & 0xFF)
+        _ = try? await send(timePayload, timeout: 5, label: "sync time")
+        _ = try? await send(Data([0x1C, 0x01, 0x3F]), timeout: 5, label: "set notifications")
+
+        var collected: [RawRingEvent] = []
+        var start = cursor
+
+        for _ in 0..<maxBatches {
+            var request = Data([0x10, 0x09])
+            withUnsafeBytes(of: start.littleEndian) { request.append(contentsOf: $0) }
+            request.append(0xFF)  // max events per batch
+            withUnsafeBytes(of: Int32(-1).littleEndian) { request.append(contentsOf: $0) }
+
+            let batch = try await collectEventBatch(request: request)
+            guard !batch.events.isEmpty else { break }
+
+            collected.append(contentsOf: batch.events)
+            let newest = batch.events.map(\.timestamp).max() ?? start
+            let next = newest &+ 1
+            guard next > start else { break }
+            start = next
+            onProgress(collected.count, batch.bytesLeft)
+
+            if batch.bytesLeft == 0 { break }
+        }
+        return (collected, start)
+    }
+
+    /// Writes a request and gathers pushed frames until the 0x11 summary.
+    private func collectEventBatch(request: Data) async throws -> EventBatch {
+        guard let peripheral, let writeChar else {
+            throw RingBLEError.timeout("characteristic discovery")
+        }
+        requestGeneration &+= 1
+        let generation = requestGeneration
+        expectedTag = nil
+        batch = EventBatch()
+        collectingEvents = true
+        defer { collectingEvents = false }
+
+        let writeType: CBCharacteristicWriteType =
+            writeChar.properties.contains(.write) ? .withResponse : .withoutResponse
+        peripheral.writeValue(request, for: writeChar, type: writeType)
+
+        // Poll for the summary; a batch of 255 events takes a moment to stream.
+        let deadline = Date().addingTimeInterval(20)
+        while Date() < deadline {
+            if batch.sawSummary { break }
+            try await Task.sleep(nanoseconds: 200_000_000)
+        }
+        guard requestGeneration == generation else {
+            throw RingBLEError.timeout("event batch")
+        }
+        if !batch.sawSummary, batch.events.isEmpty {
+            throw RingBLEError.timeout("event batch")
+        }
+        return batch
     }
 
     /// Enables realtime measurement and listens for *pushed* packets.
@@ -530,6 +628,33 @@ final class RingBLEClient: NSObject {
             bootloader: version(6),
             btStack: version(9),
             macAddress: mac
+        )
+    }
+
+    /// Sorts one pushed frame into a batch.
+    ///
+    /// History events use tags ≥ 0x41 and start with a little-endian
+    /// deciseconds timestamp; tag 0x11 is the batch summary carrying
+    /// `bytes_left`, which drives the drain loop.
+    static func ingest(_ packet: Data, into batch: inout EventBatch) {
+        guard packet.count >= 2 else { return }
+        let tag = packet[0]
+        let payload = packet.dropFirst(2)
+
+        if tag == 0x11 {
+            guard payload.count >= 6 else { return }
+            let bytes = [UInt8](payload)
+            batch.bytesLeft = UInt32(bytes[2]) | UInt32(bytes[3]) << 8
+                | UInt32(bytes[4]) << 16 | UInt32(bytes[5]) << 24
+            batch.sawSummary = true
+            return
+        }
+        guard tag >= 0x41, payload.count >= 4 else { return }
+        let bytes = [UInt8](payload)
+        let timestamp = UInt32(bytes[0]) | UInt32(bytes[1]) << 8
+            | UInt32(bytes[2]) << 16 | UInt32(bytes[3]) << 24
+        batch.events.append(
+            RawRingEvent(tag: tag, timestamp: timestamp, body: Data(payload.dropFirst(4)))
         )
     }
 
@@ -866,6 +991,12 @@ extension RingBLEClient: CBPeripheralDelegate {
                 "\(characteristic.uuid.uuidString.prefix(8)) → \(value.prefix(20).hexString)"
             )
         }
+        // History drain: frames arrive pushed, terminated by an 0x11 summary.
+        if collectingEvents, characteristic.uuid != Self.writeUUID {
+            Self.ingest(value, into: &batch)
+            return
+        }
+
         // Accept replies from any subscribed characteristic in the service.
         guard characteristic.uuid != Self.writeUUID,
               let pending = responseContinuation

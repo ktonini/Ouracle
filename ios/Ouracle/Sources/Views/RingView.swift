@@ -3,6 +3,10 @@ import SwiftUI
 /// Direct-to-ring screen: battery, device info, and the auth key.
 /// Everything here talks to the ring over Bluetooth — no server, no cloud.
 struct RingView: View {
+    @EnvironmentObject var store: AppStore
+    @State private var historyState: OuracleClient.RingSyncState?
+    @State private var historyStatus: String?
+    @State private var syncing = false
     @State private var battery: RingBattery?
     @State private var info: RingInfo?
     @State private var status: String?
@@ -22,6 +26,7 @@ struct RingView: View {
                         .foregroundStyle(status.hasPrefix("Error") ? .red : .secondary)
                 }
             }
+            historySection
             deviceSection
             keySection
         }
@@ -83,6 +88,29 @@ struct RingView: View {
         case 50...: return .green
         case 20..<50: return .orange
         default: return .red
+        }
+    }
+
+    // MARK: - History
+
+    private var historySection: some View {
+        Section("Ring history") {
+            if let historyState {
+                LabeledContent("Events stored", value: historyState.storedEvents.formatted())
+            }
+            if let historyStatus {
+                Text(historyStatus)
+                    .font(.footnote)
+                    .foregroundStyle(historyStatus.hasPrefix("Error") ? .red : .secondary)
+            }
+            Button(syncing ? "Syncing…" : "Sync ring history") {
+                Task { await syncHistory() }
+            }
+            .disabled(busy || syncing || !keySaved)
+
+            Text("Pulls the ring's own recorded events — sleep stages, HRV, temperature, motion — straight over Bluetooth. Stored raw on your server, independent of Oura's cloud.")
+                .font(.footnote)
+                .foregroundStyle(.secondary)
         }
     }
 
@@ -194,6 +222,42 @@ struct RingView: View {
     }
 
     // MARK: - Actions
+
+    /// Resumes from the server's cursor, drains the ring, uploads raw frames.
+    private func syncHistory() async {
+        guard let client = store.client else {
+            historyStatus = "Error: set the server URL and token first."
+            return
+        }
+        syncing = true
+        historyStatus = "Connecting to ring…"
+        do {
+            let state = try await client.ringSyncState()
+            historyStatus = "Draining from cursor \(state.cursor)…"
+
+            let result = try await RingBLEClient().syncHistory(from: state.cursor) { count, left in
+                Task { @MainActor in
+                    historyStatus = "\(count) events… (\(left) bytes left on ring)"
+                }
+            }
+
+            if result.events.isEmpty {
+                historyStatus = "Ring had nothing new."
+            } else {
+                historyStatus = "Uploading \(result.events.count) events…"
+                historyState = try await client.uploadRingEvents(
+                    result.events.map {
+                        .init(tag: Int($0.tag), timestamp: $0.timestamp, body: $0.body.hexString)
+                    },
+                    nextCursor: result.nextCursor
+                )
+                historyStatus = "Synced \(result.events.count) events from the ring."
+            }
+        } catch {
+            historyStatus = "Error: \(error.localizedDescription)"
+        }
+        syncing = false
+    }
 
     private func refreshBattery() async {
         busy = true

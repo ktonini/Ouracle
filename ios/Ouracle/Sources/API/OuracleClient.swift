@@ -63,6 +63,45 @@ struct OuracleClient {
         try await get("api/mobile/sleep/\(day)")
     }
 
+    struct RingSyncState: Codable {
+        let cursor: UInt32
+        let storedEvents: Int
+        let latestEventAt: UInt32?
+
+        enum CodingKeys: String, CodingKey {
+            case cursor
+            case storedEvents = "stored_events"
+            case latestEventAt = "latest_event_at"
+        }
+    }
+
+    func ringSyncState() async throws -> RingSyncState {
+        try await get("api/mobile/ring-events/state")
+    }
+
+    /// A history frame ready for upload. Deliberately independent of the BLE
+    /// client so the widget extension (which shares this file) needn't
+    /// compile CoreBluetooth code.
+    struct RingEventPayload: Encodable {
+        let tag: Int
+        let timestamp: UInt32
+        let body: String
+    }
+
+    /// Uploads raw history frames; the server decodes them later.
+    func uploadRingEvents(
+        _ events: [RingEventPayload], nextCursor: UInt32
+    ) async throws -> RingSyncState {
+        struct Body: Encodable {
+            let events: [RingEventPayload]
+            let next_cursor: UInt32
+        }
+        return try await post(
+            "api/mobile/ring-events",
+            body: Body(events: events, next_cursor: nextCursor)
+        )
+    }
+
     func registerPushToken(_ token: String, deviceName: String) async throws {
         struct Body: Encodable {
             let token: String

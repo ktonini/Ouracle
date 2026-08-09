@@ -816,6 +816,78 @@ def mobile_sleep_sessions(
     ]
 
 
+RING_CURSOR_KEY = "ring_events:cursor"
+
+
+class RingEventUpload(BaseModel):
+    tag: int = Field(ge=0, le=255)
+    timestamp: int = Field(ge=0)
+    body: str = Field(default="", max_length=2048)  # hex
+
+
+class RingEventBatch(BaseModel):
+    events: List[RingEventUpload] = Field(default_factory=list)
+    next_cursor: Optional[int] = None
+
+
+class RingSyncState(BaseModel):
+    cursor: int
+    stored_events: int
+    latest_event_at: Optional[int] = None
+
+
+@mobile_client_router.get("/api/mobile/ring-events/state", response_model=RingSyncState)
+def ring_sync_state(
+    _: Dict[str, Any] = Depends(_require_mobile_token),
+    db: Session = Depends(get_db),
+):
+    """Where to resume the ring's history drain."""
+    from ..models import IngestState, RingEventRaw
+
+    row = db.get(IngestState, RING_CURSOR_KEY)
+    newest = db.query(RingEventRaw).order_by(RingEventRaw.timestamp.desc()).first()
+    return RingSyncState(
+        cursor=int(row.value) if row and row.value else 0,
+        stored_events=db.query(RingEventRaw).count(),
+        latest_event_at=newest.timestamp if newest else None,
+    )
+
+
+@mobile_client_router.post("/api/mobile/ring-events", response_model=RingSyncState)
+def upload_ring_events(
+    batch: RingEventBatch,
+    _: Dict[str, Any] = Depends(_require_mobile_token),
+    db: Session = Depends(get_db),
+):
+    """Accepts raw history-event frames drained from the ring by the phone."""
+    from ..models import IngestState, RingEventRaw
+
+    for event in batch.events:
+        key = f"{event.tag:02x}-{event.timestamp}"
+        db.merge(
+            RingEventRaw(
+                id=key,
+                tag=event.tag,
+                timestamp=event.timestamp,
+                body=event.body.lower(),
+                received_at=datetime.now(timezone.utc).replace(tzinfo=None),
+            )
+        )
+
+    if batch.next_cursor is not None:
+        row = db.get(IngestState, RING_CURSOR_KEY)
+        if row is None:
+            row = IngestState(key=RING_CURSOR_KEY)
+            db.add(row)
+        # Never move the bookmark backwards.
+        current = int(row.value) if row.value else 0
+        row.value = str(max(current, batch.next_cursor))
+        row.updated_at = datetime.now(timezone.utc).replace(tzinfo=None)
+
+    db.commit()
+    return ring_sync_state(_, db)
+
+
 class PushTokenRequest(BaseModel):
     token: str = Field(min_length=16, max_length=200)
     device_name: str = Field(default="iPhone", max_length=64)

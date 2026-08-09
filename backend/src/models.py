@@ -200,6 +200,25 @@ class CardiovascularAge(Base):
     vascular_age: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
 
 
+class RingEventRaw(Base):
+    """History events drained straight off the ring over Bluetooth.
+
+    Stored raw: the ring's buffer is finite and the capture is unrepeatable,
+    while decoding can be improved later (``decoded`` is backfilled).
+    """
+
+    __tablename__ = "ring_event_raw"
+
+    # tag + ring timestamp is the natural key; re-uploads overwrite.
+    id: Mapped[str] = mapped_column(String, primary_key=True)
+    tag: Mapped[int] = mapped_column(Integer, index=True)
+    # Ring clock, in deciseconds (100 ms units).
+    timestamp: Mapped[int] = mapped_column(Integer, index=True)
+    body: Mapped[str] = mapped_column(Text)  # hex
+    received_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    decoded: Mapped[Optional[dict]] = mapped_column(JSON, nullable=True)
+
+
 class IngestState(Base):
     """Key/value store for incremental-ingest detection state."""
 
