@@ -215,6 +215,18 @@ final class RingBLEClient: NSObject {
             log.append("found: \(ring.name ?? "unnamed") \(ring.identifier.uuidString.prefix(8))")
             log.append("state: \(ring.state == .connected ? "already connected" : "connecting")")
             try await connect(ring)
+            log.append("connected: \(peripheral?.state == .connected ? "yes" : "NO")")
+
+            // A plain read forces iOS to establish link encryption if the
+            // ring demands it — writes are silently dropped until then.
+            if let readable = peripheral?.services?
+                .first(where: { $0.uuid == Self.serviceUUID })?
+                .characteristics?.first(where: { $0.properties.contains(.read) })
+            {
+                peripheral?.readValue(for: readable)
+                try? await Task.sleep(nanoseconds: 1_500_000_000)
+                log.append("read probe \(readable.uuid.uuidString.prefix(8)): \(readable.value?.hexString ?? "nil")")
+            }
 
             if let service = peripheral?.services?.first(where: { $0.uuid == Self.serviceUUID }) {
                 for characteristic in service.characteristics ?? [] {
@@ -677,6 +689,25 @@ extension RingBLEClient: CBPeripheralDelegate {
         } else {
             pending.resume()
         }
+    }
+
+    /// Write acknowledgements. A failed write (commonly "Encryption is
+    /// insufficient" when the link isn't secured yet) is otherwise invisible
+    /// and looks identical to the ring ignoring us.
+    func peripheral(
+        _ peripheral: CBPeripheral,
+        didWriteValueFor characteristic: CBCharacteristic,
+        error: Error?
+    ) {
+        if capturing {
+            captureLog.append(
+                "write ack \(characteristic.uuid.uuidString.prefix(8)): \(error.map { "ERROR \($0.localizedDescription)" } ?? "ok")"
+            )
+        }
+        guard let error, let pending = responseContinuation else { return }
+        responseContinuation = nil
+        expectedTag = nil
+        pending.resume(throwing: RingBLEError.badResponse("write failed: \(error.localizedDescription)"))
     }
 
     func peripheral(
