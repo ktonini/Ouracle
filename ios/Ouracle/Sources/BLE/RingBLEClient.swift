@@ -545,13 +545,31 @@ final class RingBLEClient: NSObject {
         // No expectTag here: filtering on 0x2f made auth start timing out on
         // the real ring, though it had worked when any reply was accepted.
         // parseNonce validates the shape instead.
-        var nonceResponse = try await send(Data([0x2F, 0x01, 0x2B]), label: "auth nonce")
-
-        // `17 01 xx` means the ring is in a leftover BLE/fast mode rather than
-        // issuing a nonce. Clear it and ask once more.
-        if nonceResponse.first == 0x17 {
-            await resetRingMode()
-            nonceResponse = try await send(Data([0x2F, 0x01, 0x2B]), label: "auth nonce")
+        // The ring is unreliable here in two distinct ways: it sometimes
+        // ignores the request outright, and if it is stuck in a leftover
+        // BLE/fast mode it answers `17 01 xx` instead of issuing a nonce.
+        // Clearing the mode fixes the latter, and a retry covers the former.
+        var nonceResponse = Data()
+        var lastError: Error?
+        for attempt in 0..<3 {
+            if attempt > 0 { await resetRingMode() }
+            do {
+                let reply = try await send(
+                    Data([0x2F, 0x01, 0x2B]), timeout: 8, label: "auth nonce"
+                )
+                if reply.first == 0x2F {
+                    nonceResponse = reply
+                    break
+                }
+                lastError = RingBLEError.badResponse(
+                    "nonce \(reply.prefix(4).hexString)"
+                )
+            } catch {
+                lastError = error
+            }
+        }
+        guard !nonceResponse.isEmpty else {
+            throw lastError ?? RingBLEError.timeout("auth nonce")
         }
         let nonce = try Self.parseNonce(nonceResponse)
         let encrypted = try Self.aesECBEncrypt(nonce, key: key)
