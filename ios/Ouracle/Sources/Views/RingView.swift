@@ -207,6 +207,16 @@ struct RingView: View {
             }
             .disabled(busy || streaming)
 
+            Button("Compare subscription modes") {
+                Task {
+                    busy = true
+                    diagnostics = ["running A/B, ~30s…"]
+                    diagnostics = await RingBLEClient.compareSubscriptionModes()
+                    busy = false
+                }
+            }
+            .disabled(busy || streaming)
+
             Button("Check measurement features") {
                 Task {
                     busy = true

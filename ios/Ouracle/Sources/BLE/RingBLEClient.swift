@@ -82,6 +82,8 @@ final class RingBLEClient: NSObject {
     private var requestGeneration: UInt64 = 0
     private var capturing = false
     private var captureLog: [String] = []
+    /// Subscribe only to the primary notify characteristic (Ring 3 behaviour).
+    var subscribePrimaryOnly = false
     private var discoveryContinuation: CheckedContinuation<CBPeripheral, Error>?
 
     override init() {
@@ -198,6 +200,53 @@ final class RingBLEClient: NSObject {
                 }
             }
         }
+    }
+
+    /// Runs the probe twice — subscribing only to the primary characteristic,
+    /// then to all of them — to settle whether the extra Ring 5 channels are
+    /// what stops the ring answering.
+    static func compareSubscriptionModes() async -> [String] {
+        var log = ["=== A: primary characteristic only ==="]
+        let minimal = RingBLEClient()
+        minimal.subscribePrimaryOnly = true
+        log += await minimal.probe()
+
+        try? await Task.sleep(nanoseconds: 3_000_000_000)
+
+        log.append("=== B: all notify characteristics ===")
+        let full = RingBLEClient()
+        log += await full.probe()
+        return log
+    }
+
+    /// Minimal connect-and-ask used by the A/B comparison.
+    func probe() async -> [String] {
+        var log: [String] = []
+        captureLog = []
+        capturing = true
+        defer { capturing = false }
+        do {
+            try await waitForPowerOn()
+            let ring = try await findRing()
+            try await connect(ring)
+            log.append("connected: \(peripheral?.state == .connected ? "yes" : "no")")
+            if let info = try? await send(Data([0x08, 0x03, 0x00, 0x00, 0x00]), timeout: 6, label: "info") {
+                log.append("firmware: \(info.prefix(6).hexString)…  ✅")
+            } else {
+                log.append("firmware: NO REPLY ❌")
+            }
+            if let nonce = try? await send(Data([0x2F, 0x01, 0x2B]), timeout: 6, label: "nonce") {
+                log.append("nonce: \(nonce.prefix(6).hexString)…  ✅")
+            } else {
+                log.append("nonce: NO REPLY ❌")
+            }
+            disconnect()
+        } catch {
+            log.append("failed: \(error.localizedDescription)")
+            disconnect()
+        }
+        log += captureLog.isEmpty ? ["(no notifications)"] : captureLog
+        return log
     }
 
     /// Connects and narrates every step, capturing raw notifications from all
@@ -662,7 +711,12 @@ extension RingBLEClient: CBPeripheralDelegate {
         }
         writeChar = characteristics.first { $0.uuid == Self.writeUUID }
         let subscribable = characteristics.filter {
-            $0.properties.contains(.notify) || $0.properties.contains(.indicate)
+            guard $0.properties.contains(.notify) || $0.properties.contains(.indicate)
+            else { return false }
+            // Subscribing to the extra Ring 5 channels (0004/0005/0006) is
+            // suspected of putting the ring into a state where it stops
+            // servicing ATT requests; primaryOnly restricts us to 0003.
+            return subscribePrimaryOnly ? $0.uuid == Self.notifyUUID : true
         }
         pendingSubscriptions = subscribable.count
         for characteristic in subscribable {
