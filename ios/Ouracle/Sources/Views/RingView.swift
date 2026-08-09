@@ -103,12 +103,14 @@ struct RingView: View {
                     .font(.footnote)
                     .foregroundStyle(historyStatus.hasPrefix("Error") ? .red : .secondary)
             }
-            Button(syncing ? "Syncing…" : "Sync ring history") {
+            Button(syncing ? "Syncing…" : "Sync now") {
                 Task { await syncHistory() }
             }
             .disabled(busy || syncing || !keySaved)
 
-            Text("Pulls the ring's own recorded events — sleep stages, HRV, temperature, motion — straight over Bluetooth. Stored raw on your server, independent of Oura's cloud.")
+            Toggle("Sync automatically", isOn: $store.ringSyncEnabled)
+
+            Text("Pulls the ring's own recorded events — sleep stages, HRV, temperature, motion — straight over Bluetooth. Stored raw on your server, independent of Oura's cloud. Runs quietly when you open the app, at most every 30 minutes.")
                 .font(.footnote)
                 .foregroundStyle(.secondary)
         }

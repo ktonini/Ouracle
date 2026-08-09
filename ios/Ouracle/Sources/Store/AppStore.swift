@@ -9,6 +9,12 @@ final class AppStore: ObservableObject {
     @AppStorage("serverURL") var serverURLString: String = "https://oura.cmd.link"
     @AppStorage("healthExportEnabled") var healthExportEnabled: Bool = false
     @AppStorage("pushRegistered") var pushRegistered: Bool = false
+    @AppStorage("ringSyncEnabled") var ringSyncEnabled: Bool = true
+    @Published var lastRingSyncCount: Int?
+    private var ringSyncing = false
+    private var lastRingSync: Date?
+    /// Don't drain more often than this when opening the app repeatedly.
+    private let ringSyncInterval: TimeInterval = 30 * 60
     @Published var token: String
     @Published var sync: SyncResponse?
     @Published var isLoading = false
@@ -86,6 +92,44 @@ final class AppStore: ObservableObject {
             try await HealthKitExporter.shared.export(sessions: sessions, day: day)
         } catch {
             lastError = "Health export: \(error.localizedDescription)"
+        }
+    }
+
+    /// Drains the ring's history in the background and uploads it.
+    ///
+    /// Deliberately quiet: the ring is often unreachable (out of range, busy,
+    /// or simply ignoring us), and a failed attempt is not worth telling the
+    /// user about — the cursor is server-side and idempotent, so the next
+    /// attempt simply picks up where this one stopped. Manual sync in the Ring
+    /// screen still surfaces errors.
+    func syncRingHistoryQuietly() async {
+        guard ringSyncEnabled, let client else { return }
+        // One attempt per interval; draining is slow and battery-hungry.
+        if let last = lastRingSync, Date().timeIntervalSince(last) < ringSyncInterval {
+            return
+        }
+        guard !ringSyncing else { return }
+        ringSyncing = true
+        defer { ringSyncing = false }
+
+        do {
+            let state = try await client.ringSyncState()
+            let result = try await RingBLEClient().syncHistory(from: state.cursor)
+            guard !result.events.isEmpty else {
+                lastRingSync = Date()
+                return
+            }
+            _ = try await client.uploadRingEvents(
+                result.events.map {
+                    .init(tag: Int($0.tag), timestamp: $0.timestamp, body: $0.body.hexString)
+                },
+                nextCursor: result.nextCursor
+            )
+            lastRingSyncCount = result.events.count
+            lastRingSync = Date()
+        } catch {
+            // Silent by design; see the doc comment.
+            NSLog("Background ring sync skipped: %@", error.localizedDescription)
         }
     }
 

@@ -15,8 +15,19 @@ struct OuracleApp: App {
 
 struct RootView: View {
     @EnvironmentObject var store: AppStore
+    @Environment(\.scenePhase) private var scenePhase
 
     var body: some View {
+        tabs
+            .onChange(of: scenePhase) { _, phase in
+                // Opportunistic drain: the ring is frequently unreachable, so
+                // this fails quietly and simply tries again next time.
+                guard phase == .active else { return }
+                Task { await store.syncRingHistoryQuietly() }
+            }
+    }
+
+    private var tabs: some View {
         TabView {
             TodayView()
                 .tabItem { Label("Today", systemImage: "sun.max") }
