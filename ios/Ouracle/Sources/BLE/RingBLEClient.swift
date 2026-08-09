@@ -259,7 +259,7 @@ final class RingBLEClient: NSObject {
         let now = UInt64(Date().timeIntervalSince1970)
         var timePayload = Data([0x12, 0x09])
         withUnsafeBytes(of: now.littleEndian) { timePayload.append(contentsOf: $0) }
-        timePayload.append(UInt8(TimeZone.current.secondsFromGMT() / 1800) & 0xFF)
+        timePayload.append(Self.timezoneHalfHoursByte())
         _ = try? await send(timePayload, timeout: 5, label: "sync time")
         _ = try? await send(Data([0x1C, 0x01, 0x3F]), timeout: 5, label: "set notifications")
 
@@ -648,6 +648,18 @@ final class RingBLEClient: NSObject {
             btStack: version(9),
             macAddress: mac
         )
+    }
+
+    /// UTC offset in half-hours, as a signed byte.
+    ///
+    /// Western offsets are negative, so this must go through Int8 and be
+    /// reinterpreted — `UInt8(-14)` traps at runtime ("Negative value is not
+    /// representable"), which crashed history sync everywhere west of
+    /// Greenwich.
+    nonisolated static func timezoneHalfHoursByte(
+        secondsFromGMT: Int = TimeZone.current.secondsFromGMT()
+    ) -> UInt8 {
+        UInt8(bitPattern: Int8(clamping: secondsFromGMT / 1800))
     }
 
     /// Sorts one pushed frame into a batch.

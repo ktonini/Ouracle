@@ -69,3 +69,28 @@ final class RingHistoryTests: XCTestCase {
         XCTAssertEqual(batch.events.map(\.timestamp).max(), 1234)
     }
 }
+
+extension RingHistoryTests {
+    /// Regression: UInt8(-14) traps, so western time zones crashed the app
+    /// as soon as history sync sent the ring's clock-sync command.
+    func testTimezoneByteHandlesWesternOffsets() {
+        // PDT, UTC-7 -> -14 half hours -> 0xf2 two's complement.
+        XCTAssertEqual(RingBLEClient.timezoneHalfHoursByte(secondsFromGMT: -25200), 0xF2)
+        // PST, UTC-8 -> -16 -> 0xf0
+        XCTAssertEqual(RingBLEClient.timezoneHalfHoursByte(secondsFromGMT: -28800), 0xF0)
+    }
+
+    func testTimezoneByteHandlesUTCAndEast() {
+        XCTAssertEqual(RingBLEClient.timezoneHalfHoursByte(secondsFromGMT: 0), 0)
+        // CEST, UTC+2 -> 4
+        XCTAssertEqual(RingBLEClient.timezoneHalfHoursByte(secondsFromGMT: 7200), 4)
+        // India, UTC+5:30 -> 11 (half-hour zone)
+        XCTAssertEqual(RingBLEClient.timezoneHalfHoursByte(secondsFromGMT: 19800), 11)
+    }
+
+    func testTimezoneByteClampsAbsurdOffsets() {
+        // Must never trap, whatever the system reports.
+        _ = RingBLEClient.timezoneHalfHoursByte(secondsFromGMT: Int.min / 2)
+        _ = RingBLEClient.timezoneHalfHoursByte(secondsFromGMT: Int.max / 2)
+    }
+}
