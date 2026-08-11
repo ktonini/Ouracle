@@ -49,7 +49,14 @@ def _fmt_duration(seconds: int) -> str:
 
 
 def _fmt_clock(dt: Optional[datetime]) -> Optional[str]:
-    return dt.strftime("%-I:%M %p") if dt else None
+    """Bedtimes are stored as naive UTC; report them in local time.
+
+    Formatting them directly showed a 06:06 bedtime as "1:06 PM".
+    """
+    if dt is None:
+        return None
+    local = dt.replace(tzinfo=timezone.utc).astimezone()
+    return local.strftime("%-I:%M %p")
 
 
 def compose_report(

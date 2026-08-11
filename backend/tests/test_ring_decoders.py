@@ -102,3 +102,23 @@ def test_rmssd_ignores_artefact_jumps():
     clean = rmssd([800, 820, 800, 820])
     withartefact = rmssd([800, 820, 1900, 800, 820])
     assert withartefact == clean
+
+
+def test_ring_reported_hrv_ignores_padding(db_session):
+    """Zero slots are padding for intervals the ring didn't measure."""
+    from backend.src.models import RingEventRaw
+    from backend.src.ring_events.runner import ring_reported_hrv
+
+    db_session.add(
+        RingEventRaw(
+            id="5d-1", tag=0x5D, timestamp=100, body="",
+            decoded={"hr_bpm": [0, 64, 66], "rmssd_ms": [0, 36, 18]},
+        )
+    )
+    db_session.commit()
+
+    reported = ring_reported_hrv(db_session)
+    assert reported["rmssd_ms"] == [36, 18]
+    assert reported["average_rmssd_ms"] == 27.0
+    assert reported["average_hr_bpm"] == 65
+    assert reported["samples"] == 2

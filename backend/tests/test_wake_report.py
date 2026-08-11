@@ -1,5 +1,6 @@
 """Wake report: composition, readiness gating, and once-per-day dedup."""
 
+import time
 from datetime import date, datetime
 
 from backend.src.models import IngestState, Readiness, Sleep, SleepSession
@@ -29,7 +30,15 @@ def _session(**overrides):
     return SleepSession(**values)
 
 
-def test_compose_full_report():
+def _use_timezone(monkeypatch, name: str):
+    """Bedtimes are stored naive-UTC and reported in local time, so these
+    assertions must pin the zone rather than inherit the machine's."""
+    monkeypatch.setenv("TZ", name)
+    time.tzset()
+
+
+def test_compose_full_report(monkeypatch):
+    _use_timezone(monkeypatch, "UTC")
     message = compose_report(
         [_session()],
         Sleep(id="ds-1", day=DAY, score=78),
@@ -41,6 +50,15 @@ def test_compose_full_report():
     assert "Readiness 81" in message
     assert "deep 1h 30m" in message
     assert "HRV 55ms" in message
+
+
+def test_clock_times_are_local_not_utc(monkeypatch):
+    """Regression: a 06:47 UTC wake-up was reported as "1:47 PM"."""
+    _use_timezone(monkeypatch, "America/Los_Angeles")
+    message = compose_report([_session()], None, None)
+    # 23:32 / 06:47 UTC -> 16:32 / 23:47 the previous evening in PDT.
+    assert "4:32 PM" in message
+    assert "11:47 PM" in message
 
 
 def test_compose_without_scores_yet():
