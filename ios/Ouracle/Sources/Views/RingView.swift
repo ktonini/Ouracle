@@ -32,7 +32,10 @@ struct RingView: View {
         }
         .navigationTitle("Ring")
         .navigationBarTitleDisplayMode(.inline)
-        .task { if keySaved, battery == nil { await refreshBattery() } }
+        .task {
+            historyState = try? await store.client?.ringSyncState()
+            if keySaved, battery == nil { await refreshBattery() }
+        }
     }
 
     // MARK: - Battery
@@ -91,12 +94,37 @@ struct RingView: View {
         }
     }
 
+    /// Server timestamps are naive UTC (no offset), so parse them as such.
+    static func parseServerDate(_ text: String) -> Date? {
+        let iso = ISO8601DateFormatter()
+        iso.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        if let date = iso.date(from: text) { return date }
+        let plain = DateFormatter()
+        plain.dateFormat = "yyyy-MM-dd'T'HH:mm:ss"
+        plain.timeZone = TimeZone(identifier: "UTC")
+        return plain.date(from: String(text.prefix(19)))
+    }
+
     // MARK: - History
 
     private var historySection: some View {
         Section("Ring history") {
             if let historyState {
                 LabeledContent("Events stored", value: historyState.storedEvents.formatted())
+                if let attempt = historyState.lastAttemptAt,
+                   let when = Self.parseServerDate(attempt)
+                {
+                    LabeledContent("Last attempt") {
+                        VStack(alignment: .trailing, spacing: 1) {
+                            Text(when.formatted(.relative(presentation: .named)))
+                            if let status = historyState.lastStatus {
+                                Text(status)
+                                    .font(.caption2)
+                                    .foregroundStyle(status.contains("failed") ? .red : .secondary)
+                            }
+                        }
+                    }
+                }
             }
             if let historyStatus {
                 Text(historyStatus)
@@ -245,13 +273,17 @@ struct RingView: View {
 
             if result.events.isEmpty {
                 historyStatus = "Ring had nothing new."
+                historyState = try? await client.uploadRingEvents(
+                    [], nextCursor: nil, status: "manual: nothing new"
+                )
             } else {
                 historyStatus = "Uploading \(result.events.count) events…"
                 historyState = try await client.uploadRingEvents(
                     result.events.map {
                         .init(tag: Int($0.tag), timestamp: $0.timestamp, body: $0.body.hexString)
                     },
-                    nextCursor: result.nextCursor
+                    nextCursor: result.nextCursor,
+                    status: "manual: ok"
                 )
                 historyStatus = "Synced \(result.events.count) events from the ring."
             }

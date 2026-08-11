@@ -817,6 +817,8 @@ def mobile_sleep_sessions(
 
 
 RING_CURSOR_KEY = "ring_events:cursor"
+RING_ATTEMPT_KEY = "ring_events:last_attempt"
+RING_ADDED_KEY = "ring_events:last_added"
 
 
 class RingEventUpload(BaseModel):
@@ -828,12 +830,18 @@ class RingEventUpload(BaseModel):
 class RingEventBatch(BaseModel):
     events: List[RingEventUpload] = Field(default_factory=list)
     next_cursor: Optional[int] = None
+    # Reported even for empty/failed attempts, so background sync is
+    # observable rather than silently doing nothing.
+    status: Optional[str] = Field(default=None, max_length=200)
 
 
 class RingSyncState(BaseModel):
     cursor: int
     stored_events: int
     latest_event_at: Optional[int] = None
+    last_attempt_at: Optional[datetime] = None
+    last_status: Optional[str] = None
+    last_added: Optional[int] = None
 
 
 @mobile_client_router.get("/api/mobile/ring-events/state", response_model=RingSyncState)
@@ -846,10 +854,15 @@ def ring_sync_state(
 
     row = db.get(IngestState, RING_CURSOR_KEY)
     newest = db.query(RingEventRaw).order_by(RingEventRaw.timestamp.desc()).first()
+    attempt = db.get(IngestState, RING_ATTEMPT_KEY)
+    added = db.get(IngestState, RING_ADDED_KEY)
     return RingSyncState(
         cursor=int(row.value) if row and row.value else 0,
         stored_events=db.query(RingEventRaw).count(),
         latest_event_at=newest.timestamp if newest else None,
+        last_attempt_at=attempt.updated_at if attempt else None,
+        last_status=attempt.value if attempt else None,
+        last_added=int(added.value) if added and added.value else None,
     )
 
 
@@ -884,8 +897,22 @@ def upload_ring_events(
         row.value = str(max(current, batch.next_cursor))
         row.updated_at = datetime.now(timezone.utc).replace(tzinfo=None)
 
+    _record_state(db, RING_ATTEMPT_KEY, batch.status or "ok")
+    _record_state(db, RING_ADDED_KEY, str(len(batch.events)))
+
     db.commit()
     return ring_sync_state(_, db)
+
+
+def _record_state(db: Session, key: str, value: str) -> None:
+    from ..models import IngestState
+
+    row = db.get(IngestState, key)
+    if row is None:
+        row = IngestState(key=key)
+        db.add(row)
+    row.value = value
+    row.updated_at = datetime.now(timezone.utc).replace(tzinfo=None)
 
 
 class PushTokenRequest(BaseModel):

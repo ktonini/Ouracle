@@ -35,7 +35,10 @@ def client(monkeypatch):
 
 def test_state_starts_empty(client):
     state = client.get("/api/mobile/ring-events/state", headers=HEADERS).json()
-    assert state == {"cursor": 0, "stored_events": 0, "latest_event_at": None}
+    assert state["cursor"] == 0
+    assert state["stored_events"] == 0
+    assert state["latest_event_at"] is None
+    assert state["last_attempt_at"] is None
 
 
 def test_upload_stores_events_and_advances_cursor(client):
@@ -81,3 +84,32 @@ def test_cursor_never_moves_backwards(client):
 def test_requires_token(client):
     assert client.get("/api/mobile/ring-events/state").status_code == 401
     assert client.post("/api/mobile/ring-events", json={"events": []}).status_code == 401
+
+
+def test_records_attempt_status_even_when_empty(client):
+    """Background sync must leave a trace, or a run of failures looks
+    identical to 'nothing new'."""
+    state = client.post(
+        "/api/mobile/ring-events",
+        json={"events": [], "status": "auto failed: ring unavailable"},
+        headers=HEADERS,
+    ).json()
+    assert state["last_status"] == "auto failed: ring unavailable"
+    assert state["last_added"] == 0
+    assert state["last_attempt_at"] is not None
+    assert state["cursor"] == 0  # a failed attempt must not move the bookmark
+
+
+def test_successful_attempt_records_count(client):
+    state = client.post(
+        "/api/mobile/ring-events",
+        json={
+            "events": [{"tag": 0x60, "timestamp": 10, "body": "aa"}],
+            "next_cursor": 11,
+            "status": "manual: ok",
+        },
+        headers=HEADERS,
+    ).json()
+    assert state["last_status"] == "manual: ok"
+    assert state["last_added"] == 1
+    assert state["cursor"] == 11

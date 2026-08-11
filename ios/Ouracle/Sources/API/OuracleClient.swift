@@ -67,11 +67,17 @@ struct OuracleClient {
         let cursor: UInt32
         let storedEvents: Int
         let latestEventAt: UInt32?
+        let lastAttemptAt: String?
+        let lastStatus: String?
+        let lastAdded: Int?
 
         enum CodingKeys: String, CodingKey {
             case cursor
             case storedEvents = "stored_events"
             case latestEventAt = "latest_event_at"
+            case lastAttemptAt = "last_attempt_at"
+            case lastStatus = "last_status"
+            case lastAdded = "last_added"
         }
     }
 
@@ -89,16 +95,20 @@ struct OuracleClient {
     }
 
     /// Uploads raw history frames; the server decodes them later.
+    ///
+    /// `status` is reported even for empty or failed attempts so background
+    /// syncing leaves a trace rather than being invisible.
     func uploadRingEvents(
-        _ events: [RingEventPayload], nextCursor: UInt32
+        _ events: [RingEventPayload], nextCursor: UInt32?, status: String
     ) async throws -> RingSyncState {
         struct Body: Encodable {
             let events: [RingEventPayload]
-            let next_cursor: UInt32
+            let next_cursor: UInt32?
+            let status: String
         }
         return try await post(
             "api/mobile/ring-events",
-            body: Body(events: events, next_cursor: nextCursor)
+            body: Body(events: events, next_cursor: nextCursor, status: status)
         )
     }
 

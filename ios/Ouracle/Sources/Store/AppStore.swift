@@ -115,21 +115,24 @@ final class AppStore: ObservableObject {
         do {
             let state = try await client.ringSyncState()
             let result = try await RingBLEClient().syncHistory(from: state.cursor)
-            guard !result.events.isEmpty else {
-                lastRingSync = Date()
-                return
-            }
             _ = try await client.uploadRingEvents(
                 result.events.map {
                     .init(tag: Int($0.tag), timestamp: $0.timestamp, body: $0.body.hexString)
                 },
-                nextCursor: result.nextCursor
+                nextCursor: result.events.isEmpty ? nil : result.nextCursor,
+                status: result.events.isEmpty ? "auto: nothing new" : "auto: ok"
             )
             lastRingSyncCount = result.events.count
             lastRingSync = Date()
         } catch {
-            // Silent by design; see the doc comment.
+            // Quiet for the user, but recorded server-side so a run of
+            // failures is visible rather than looking like "nothing new".
             NSLog("Background ring sync skipped: %@", error.localizedDescription)
+            lastRingSync = Date()
+            _ = try? await client.uploadRingEvents(
+                [], nextCursor: nil,
+                status: "auto failed: \(error.localizedDescription.prefix(120))"
+            )
         }
     }
 
