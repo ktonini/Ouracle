@@ -3,7 +3,7 @@ import ipaddress
 import logging
 import os
 import secrets
-from datetime import date, datetime, timedelta, timezone
+from datetime import date, datetime, time, timedelta, timezone
 from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Query
@@ -913,6 +913,59 @@ def _record_state(db: Session, key: str, value: str) -> None:
         db.add(row)
     row.value = value
     row.updated_at = datetime.now(timezone.utc).replace(tzinfo=None)
+
+
+class RingNightPoint(BaseModel):
+    t: datetime
+    value: float
+
+
+class RingNightResponse(BaseModel):
+    """A night reconstructed purely from events read off the ring."""
+
+    start: datetime
+    end: datetime
+    heart_rate: List[RingNightPoint] = Field(default_factory=list)
+    movement: List[RingNightPoint] = Field(default_factory=list)
+    temperature: List[RingNightPoint] = Field(default_factory=list)
+    beats: int = 0
+    lowest_hr: Optional[int] = None
+    average_hr: Optional[int] = None
+    event_count: int = 0
+    detected_bedtimes: List[Dict[str, Any]] = Field(default_factory=list)
+    coverage: Optional[Dict[str, Any]] = None
+
+
+@mobile_client_router.get("/api/mobile/ring-night/{day}", response_model=RingNightResponse)
+def ring_night(
+    day: date,
+    _: Dict[str, Any] = Depends(_require_mobile_token),
+    db: Session = Depends(get_db),
+):
+    """Ring-derived night for `day`, spanning the previous evening to midday.
+
+    Uses the sleep session's own window when the cloud has scored the night,
+    falling back to a fixed 18:00→12:00 window otherwise, so this works even
+    when Oura has produced nothing.
+    """
+    from ..ring_events.night import build_night, coverage, detected_bedtimes
+
+    session = (
+        db.query(SleepSession)
+        .filter(SleepSession.day == day)
+        .order_by(SleepSession.total_sleep_duration.desc())
+        .first()
+    )
+    if session and session.bedtime_start and session.bedtime_end:
+        start, end = session.bedtime_start, session.bedtime_end
+    else:
+        start = datetime.combine(day - timedelta(days=1), time(18, 0))
+        end = datetime.combine(day, time(12, 0))
+
+    night = build_night(db, start, end)
+    night["detected_bedtimes"] = detected_bedtimes(db)
+    night["coverage"] = coverage(db)
+    return RingNightResponse(**night)
 
 
 class PushTokenRequest(BaseModel):

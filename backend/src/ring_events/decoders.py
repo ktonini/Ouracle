@@ -181,6 +181,48 @@ def decode_sleep_phases(body: bytes) -> Optional[Dict[str, Any]]:
     return {"header": body[0], "phases": phases}
 
 
+def decode_bedtime_period(body: bytes) -> Optional[Dict[str, Any]]:
+    """0x76 — the sleep window the ring itself detected, in ring deciseconds."""
+    if len(body) < 8:
+        return None
+    start = int.from_bytes(body[0:4], "little")
+    end = int.from_bytes(body[4:8], "little")
+    if end <= start:
+        return None
+    return {
+        "bedtime_start_ds": start,
+        "bedtime_end_ds": end,
+        "duration_hours": round((end - start) / 10 / 3600, 2),
+    }
+
+
+def decode_sleep_acm_period(body: bytes) -> Optional[Dict[str, Any]]:
+    """0x72 — six accelerometer MAD statistics, fixed-point.
+
+    Mean absolute deviation of movement: the raw signal behind restlessness,
+    and what sleep staging is largely built on.
+    """
+    if len(body) < 12:
+        return None
+
+    def fixed(frac: int, whole: int) -> float:
+        return round(whole + frac / 255.0, 4)
+
+    def q12(lo: int, hi: int) -> float:
+        return round((lo | ((hi & 0x0F) << 8)) / 4095.0 + (hi >> 4), 4)
+
+    return {
+        "acm_mad": [
+            fixed(body[0], body[1]),
+            fixed(body[2], body[3]),
+            fixed(body[4], body[5]),
+            q12(body[6], body[7]),
+            q12(body[8], body[9]),
+            q12(body[10], body[11]),
+        ]
+    }
+
+
 def decode_ascii(body: bytes) -> Optional[Dict[str, Any]]:
     text = body.decode("utf-8", errors="replace").rstrip("\x00").strip()
     return {"ascii": text} if text else None
@@ -208,6 +250,8 @@ DECODERS = {
     0x4B: decode_sleep_phases,
     0x4E: decode_sleep_phases,
     0x5A: decode_sleep_phases,
+    0x72: decode_sleep_acm_period,
+    0x76: decode_bedtime_period,
 }
 
 
