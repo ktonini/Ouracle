@@ -934,6 +934,9 @@ class RingNightResponse(BaseModel):
     event_count: int = 0
     detected_bedtimes: List[Dict[str, Any]] = Field(default_factory=list)
     coverage: Optional[Dict[str, Any]] = None
+    # Locally derived; see ring_events.staging for the method and its limits.
+    stages: List[Dict[str, Any]] = Field(default_factory=list)
+    stage_summary: Optional[Dict[str, Any]] = None
 
 
 @mobile_client_router.get("/api/mobile/ring-night/{day}", response_model=RingNightResponse)
@@ -962,9 +965,20 @@ def ring_night(
         start = datetime.combine(day - timedelta(days=1), time(18, 0))
         end = datetime.combine(day, time(12, 0))
 
+    from ..ring_events.staging import build_epochs, stage_epochs, summarise
+
     night = build_night(db, start, end)
     night["detected_bedtimes"] = detected_bedtimes(db)
     night["coverage"] = coverage(db)
+
+    # Stages are derived here, not read from the ring: it streams the inputs
+    # but finishes staging elsewhere.
+    epochs = build_epochs(
+        night.get("heart_rate", []), night.get("movement", []), night.pop("hrv", {})
+    )
+    staged = stage_epochs(epochs)
+    night["stages"] = staged
+    night["stage_summary"] = summarise(staged) if staged else None
     return RingNightResponse(**night)
 
 

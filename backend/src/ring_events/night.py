@@ -81,6 +81,29 @@ def _bucket_minutes(
     ]
 
 
+def _variability_per_bucket(
+    samples: List[Tuple[float, int]], minutes: int
+) -> Dict[str, float]:
+    """RMSSD-style variability per bucket, keyed by the bucket's timestamp."""
+    width = minutes * 60
+    buckets: Dict[int, List[int]] = {}
+    for when, interval in samples:
+        buckets.setdefault(int(when // width) * width, []).append(interval)
+
+    out: Dict[str, float] = {}
+    for start, intervals in buckets.items():
+        diffs = [
+            b - a
+            for a, b in zip(intervals, intervals[1:])
+            if abs(b - a) < 300  # ignore missed/spurious beats
+        ]
+        if not diffs:
+            continue
+        key = datetime.fromtimestamp(start, timezone.utc).isoformat()
+        out[key] = round((sum(d * d for d in diffs) / len(diffs)) ** 0.5, 1)
+    return out
+
+
 def build_night(
     db: Session, start: datetime, end: datetime, bucket_minutes: int = 5
 ) -> Dict[str, Any]:
@@ -105,6 +128,7 @@ def build_night(
     movement: List[Tuple[float, float]] = []
     temperature: List[Tuple[float, float]] = []
     beats: List[int] = []
+    ibi_samples: List[Tuple[float, int]] = []
 
     for row in rows:
         when = to_unix(row.timestamp, offset)
@@ -116,7 +140,9 @@ def build_night(
             # Spread the packet's beats across the interval they span.
             elapsed = 0.0
             for interval in good:
-                hr.append((when + elapsed / 1000.0, 60_000 / interval))
+                moment = when + elapsed / 1000.0
+                hr.append((moment, 60_000 / interval))
+                ibi_samples.append((moment, interval))
                 elapsed += interval
 
         elif row.tag == TAG_SLEEP_ACM:
@@ -130,6 +156,9 @@ def build_night(
                 temperature.append((when, sum(temps) / len(temps)))
 
     hr_series = _bucket_minutes(hr, bucket_minutes)
+    # Beat-to-beat variability per bucket, which staging uses to separate REM
+    # (variable) from deep sleep (steady).
+    variability = _variability_per_bucket(ibi_samples, bucket_minutes)
     # Lowest heart rate comes from the bucketed series, not a single beat: one
     # long interval at the edge of the plausible range would otherwise report
     # an impossible resting rate (a stray 2000 ms beat reads as 30 bpm).
@@ -145,6 +174,7 @@ def build_night(
         "lowest_hr": lowest,
         "average_hr": round(60_000 / (sum(beats) / len(beats))) if beats else None,
         "event_count": len(rows),
+        "hrv": variability,
     }
 
 

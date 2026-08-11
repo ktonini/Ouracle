@@ -242,9 +242,14 @@ final class RingBLEClient: NSObject {
     ///
     /// Returns raw frames — decoding happens server-side so it can be improved
     /// without re-reading the ring, whose buffer is finite.
+    /// - Parameter runSleepAnalysis: asks the ring to run its sleep analysis
+    ///   before draining (`0x28`). This makes it emit its detected bedtime
+    ///   window; per open_oura it does *not* produce hypnogram stages, which
+    ///   the official app finishes elsewhere. Harmless and not a mode change.
     func syncHistory(
         from cursor: UInt32,
         maxBatches: Int = 40,
+        runSleepAnalysis: Bool = true,
         onProgress: @escaping (Int, UInt32) -> Void = { _, _ in }
     ) async throws -> (events: [RawRingEvent], nextCursor: UInt32) {
         guard let key = Self.storedAuthKey() else { throw RingBLEError.noAuthKey }
@@ -262,6 +267,12 @@ final class RingBLEClient: NSObject {
         timePayload.append(Self.timezoneHalfHoursByte())
         _ = try? await send(timePayload, timeout: 5, label: "sync time")
         _ = try? await send(Data([0x1C, 0x01, 0x3F]), timeout: 5, label: "set notifications")
+
+        // Ask the ring to analyse the night, so anything it produces lands in
+        // the drain below. Best-effort: a ring that declines still syncs.
+        if runSleepAnalysis {
+            _ = try? await send(Data([0x28, 0x01, 0x00]), timeout: 8, label: "sleep analysis")
+        }
 
         var collected: [RawRingEvent] = []
         var start = cursor
