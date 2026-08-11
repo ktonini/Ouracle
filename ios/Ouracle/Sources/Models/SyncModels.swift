@@ -284,8 +284,37 @@ struct RingNight: Codable, Equatable {
     let beats: Int
     let lowestHr: Int?
     let averageHr: Int?
+    struct Stage: Codable, Equatable, Identifiable {
+        let t: String
+        let stage: String
+        let confidence: Double
+        var id: String { t }
+    }
+
+    struct StageSummary: Codable, Equatable {
+        let deepMinutes: Int
+        let lightMinutes: Int
+        let remMinutes: Int
+        let awakeMinutes: Int
+        let asleepMinutes: Int
+        let efficiencyPercent: Int?
+        let method: String
+
+        enum CodingKeys: String, CodingKey {
+            case deepMinutes = "deep_minutes"
+            case lightMinutes = "light_minutes"
+            case remMinutes = "rem_minutes"
+            case awakeMinutes = "awake_minutes"
+            case asleepMinutes = "asleep_minutes"
+            case efficiencyPercent = "efficiency_percent"
+            case method
+        }
+    }
+
     let eventCount: Int
     let detectedBedtimes: [Bedtime]
+    let stages: [Stage]
+    let stageSummary: StageSummary?
 
     enum CodingKeys: String, CodingKey {
         case start, end, beats
@@ -295,6 +324,8 @@ struct RingNight: Codable, Equatable {
         case averageHr = "average_hr"
         case eventCount = "event_count"
         case detectedBedtimes = "detected_bedtimes"
+        case stages
+        case stageSummary = "stage_summary"
     }
 }
 

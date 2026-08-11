@@ -87,6 +87,24 @@ struct DayDetailView: View {
                         .foregroundStyle(.secondary)
                 }
 
+                if !night.stages.isEmpty {
+                    RingHypnogram(stages: night.stages)
+                        .frame(height: 46)
+                    stageLegend
+                }
+
+                if let summary = night.stageSummary {
+                    HStack {
+                        stat("Deep", "\(summary.deepMinutes)m")
+                        stat("Light", "\(summary.lightMinutes)m")
+                        stat("REM", "\(summary.remMinutes)m")
+                        stat("Awake", "\(summary.awakeMinutes)m")
+                    }
+                    Text("Derived on your server from the ring's movement, heart rate and variability — an approximation, not Oura's model.")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                }
+
                 HStack {
                     stat("Avg HR", night.averageHr.map(String.init))
                     stat("Lowest", night.lowestHr.map(String.init))
@@ -325,6 +343,37 @@ struct DayDetailView: View {
         formatter.dateFormat = "yyyy-MM-dd"
         guard let date = formatter.date(from: day) else { return day }
         return date.formatted(.dateTime.weekday(.wide).month().day())
+    }
+}
+
+/// Hypnogram for locally derived stages, drawn like the cloud one so the two
+/// can be compared at a glance.
+struct RingHypnogram: View {
+    let stages: [RingNight.Stage]
+
+    var body: some View {
+        GeometryReader { geo in
+            let width = geo.size.width / CGFloat(max(stages.count, 1))
+            HStack(alignment: .bottom, spacing: 0) {
+                ForEach(stages) { entry in
+                    let stage = SleepStage(rawValue: entry.stage) ?? .light
+                    Rectangle()
+                        .fill(stage.color.opacity(entry.confidence < 0.4 ? 0.45 : 1))
+                        .frame(width: width, height: height(for: stage))
+                }
+            }
+            .frame(maxHeight: .infinity, alignment: .bottom)
+        }
+        .clipShape(RoundedRectangle(cornerRadius: 6))
+    }
+
+    private func height(for stage: SleepStage) -> CGFloat {
+        switch stage {
+        case .awake: return 46
+        case .rem: return 34
+        case .light: return 25
+        case .deep: return 15
+        }
     }
 }
 
