@@ -129,14 +129,20 @@ def build_night(
             if temps:
                 temperature.append((when, sum(temps) / len(temps)))
 
+    hr_series = _bucket_minutes(hr, bucket_minutes)
+    # Lowest heart rate comes from the bucketed series, not a single beat: one
+    # long interval at the edge of the plausible range would otherwise report
+    # an impossible resting rate (a stray 2000 ms beat reads as 30 bpm).
+    lowest = round(min(point["value"] for point in hr_series)) if hr_series else None
+
     return {
         "start": start.replace(tzinfo=timezone.utc).isoformat(),
         "end": end.replace(tzinfo=timezone.utc).isoformat(),
-        "heart_rate": _bucket_minutes(hr, bucket_minutes),
+        "heart_rate": hr_series,
         "movement": _bucket_minutes(movement, bucket_minutes),
         "temperature": _bucket_minutes(temperature, bucket_minutes),
         "beats": len(beats),
-        "lowest_hr": round(60_000 / max(beats)) if beats else None,
+        "lowest_hr": lowest,
         "average_hr": round(60_000 / (sum(beats) / len(beats))) if beats else None,
         "event_count": len(rows),
     }

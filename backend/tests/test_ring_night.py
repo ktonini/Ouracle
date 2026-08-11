@@ -109,3 +109,22 @@ def test_detected_bedtimes_converted_to_wall_clock(db_session):
     assert len(windows) == 1
     assert windows[0]["start"].startswith("2026-08-05T06:00")
     assert windows[0]["duration_hours"] == 7.0
+
+
+def test_lowest_hr_ignores_single_outlier_beats(db_session):
+    """A stray long interval must not be reported as the resting rate."""
+    _sync(db_session, 0)
+    start = datetime(2026, 8, 5, 6, 0, tzinfo=timezone.utc)
+    base = to_ring_ds(start, EPOCH) + 600
+    # Steady ~60 bpm, plus one 1999 ms interval (would read as 30 bpm).
+    db_session.add(
+        RingEventRaw(
+            id="60-a", tag=0x60, timestamp=base, body="",
+            decoded={"ibi_ms": [1000, 1000, 1999, 1000, 1000, 1000]},
+        )
+    )
+    db_session.commit()
+    night = build_night(
+        db_session, start, datetime(2026, 8, 5, 7, tzinfo=timezone.utc)
+    )
+    assert night["lowest_hr"] > 45  # not the 30 bpm artefact

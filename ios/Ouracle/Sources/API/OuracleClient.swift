@@ -81,6 +81,12 @@ struct OuracleClient {
         }
     }
 
+    /// A night rebuilt from ring events — available even when the cloud
+    /// hasn't scored the night.
+    func ringNight(day: String) async throws -> RingNight {
+        try await get("api/mobile/ring-night/\(day)")
+    }
+
     func ringSyncState() async throws -> RingSyncState {
         try await get("api/mobile/ring-events/state")
     }

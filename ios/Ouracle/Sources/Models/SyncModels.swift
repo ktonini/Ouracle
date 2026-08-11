@@ -257,6 +257,47 @@ struct SleepSessionDetail: Codable, Equatable, Identifiable {
     }
 }
 
+/// A night reconstructed from events read directly off the ring.
+struct RingNight: Codable, Equatable {
+    struct Point: Codable, Equatable, Identifiable {
+        let t: String
+        let value: Double
+        var id: String { t }
+    }
+
+    struct Bedtime: Codable, Equatable {
+        let start: String
+        let end: String
+        let durationHours: Double?
+
+        enum CodingKeys: String, CodingKey {
+            case start, end
+            case durationHours = "duration_hours"
+        }
+    }
+
+    let start: String
+    let end: String
+    let heartRate: [Point]
+    let movement: [Point]
+    let temperature: [Point]
+    let beats: Int
+    let lowestHr: Int?
+    let averageHr: Int?
+    let eventCount: Int
+    let detectedBedtimes: [Bedtime]
+
+    enum CodingKeys: String, CodingKey {
+        case start, end, beats
+        case heartRate = "heart_rate"
+        case movement, temperature
+        case lowestHr = "lowest_hr"
+        case averageHr = "average_hr"
+        case eventCount = "event_count"
+        case detectedBedtimes = "detected_bedtimes"
+    }
+}
+
 struct DailySummary: Codable, Hashable, Identifiable {
     let day: String
     let sleepScore: Int?

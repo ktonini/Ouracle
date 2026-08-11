@@ -8,6 +8,7 @@ struct DayDetailView: View {
     let day: DailySummary
 
     @State private var sessions: [SleepSessionDetail] = []
+    @State private var ringNight: RingNight?
     @State private var loading = true
     @State private var loadError: String?
 
@@ -40,6 +41,8 @@ struct DayDetailView: View {
                 ForEach(sessions) { session in
                     sessionSection(session)
                 }
+
+                ringNightSection
             }
             .padding()
         }
@@ -52,7 +55,84 @@ struct DayDetailView: View {
             } catch {
                 loadError = error.localizedDescription
             }
+            // Independent of the cloud sessions above, and fine to be absent.
+            ringNight = try? await client.ringNight(day: day.day)
             loading = false
+        }
+    }
+
+    // MARK: - From the ring itself
+
+    /// Built from events read over Bluetooth, so it appears even for nights
+    /// the cloud never scored.
+    @ViewBuilder
+    private var ringNightSection: some View {
+        if let night = ringNight, !night.heartRate.isEmpty {
+            VStack(alignment: .leading, spacing: 14) {
+                HStack {
+                    Label("From the ring", systemImage: "dot.radiowaves.left.and.right")
+                        .font(.headline)
+                    Spacer()
+                    Text("\(night.beats.formatted()) beats")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+
+                if let bedtime = night.detectedBedtimes.first,
+                   let start = parseDateTime(bedtime.start),
+                   let end = parseDateTime(bedtime.end)
+                {
+                    Text("Ring detected sleep \(start.formatted(date: .omitted, time: .shortened))–\(end.formatted(date: .omitted, time: .shortened))")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+
+                HStack {
+                    stat("Avg HR", night.averageHr.map(String.init))
+                    stat("Lowest", night.lowestHr.map(String.init))
+                    stat("Samples", night.heartRate.count.formatted())
+                }
+
+                ringChart(night.heartRate, title: "Heart rate", unit: "bpm", color: .red)
+                if !night.movement.isEmpty {
+                    ringChart(night.movement, title: "Movement", unit: "mad", color: .purple)
+                }
+                if !night.temperature.isEmpty {
+                    ringChart(night.temperature, title: "Temperature", unit: "°C", color: .orange)
+                }
+            }
+            .padding()
+            .background(.quaternary.opacity(0.4), in: RoundedRectangle(cornerRadius: 14))
+        }
+    }
+
+    private func ringChart(
+        _ points: [RingNight.Point], title: String, unit: String, color: Color
+    ) -> some View {
+        let series = points.compactMap { point -> (Date, Double)? in
+            guard let when = parseDateTime(point.t) else { return nil }
+            return (when, point.value)
+        }
+        return VStack(alignment: .leading, spacing: 4) {
+            Text(title).font(.subheadline.weight(.semibold))
+            Chart {
+                ForEach(Array(series.enumerated()), id: \.offset) { _, sample in
+                    LineMark(
+                        x: .value("Time", sample.0),
+                        y: .value(unit, sample.1)
+                    )
+                    .foregroundStyle(color)
+                    .interpolationMethod(.monotone)
+                }
+            }
+            .chartYScale(domain: .automatic(includesZero: false))
+            .chartXAxis {
+                AxisMarks(values: .stride(by: .hour)) { _ in
+                    AxisGridLine()
+                    AxisValueLabel(format: .dateTime.hour())
+                }
+            }
+            .frame(height: 100)
         }
     }
 
