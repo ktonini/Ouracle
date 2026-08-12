@@ -842,6 +842,7 @@ class RingEventBatch(BaseModel):
 class RingSyncState(BaseModel):
     cursor: int
     stored_events: int
+    decoded_events: int = 0
     latest_event_at: Optional[int] = None
     last_attempt_at: Optional[datetime] = None
     last_status: Optional[str] = None
@@ -867,6 +868,9 @@ def ring_sync_state(
     return RingSyncState(
         cursor=int(row.value) if row and row.value else 0,
         stored_events=db.query(RingEventRaw).count(),
+        decoded_events=db.query(RingEventRaw)
+        .filter(RingEventRaw.decoded.isnot(None))
+        .count(),
         latest_event_at=newest.timestamp if newest else None,
         last_attempt_at=attempt.updated_at if attempt else None,
         last_status=attempt.value if attempt else None,
@@ -885,8 +889,10 @@ def upload_ring_events(
     """Accepts raw history-event frames drained from the ring by the phone."""
     from ..models import IngestState, RingEventRaw
 
+    uploaded_ids: List[str] = []
     for event in batch.events:
         key = f"{event.tag:02x}-{event.timestamp}"
+        uploaded_ids.append(key)
         db.merge(
             RingEventRaw(
                 id=key,
@@ -896,6 +902,15 @@ def upload_ring_events(
                 received_at=datetime.now(timezone.utc).replace(tzinfo=None),
             )
         )
+
+    # Decode on the way in. This used to be a separate pass, which meant a
+    # successful upload could still leave a night invisible to everything that
+    # reads decoded events — silently, since the raw rows were all there.
+    if uploaded_ids:
+        from ..ring_events.runner import decode_stored
+
+        db.flush()
+        decode_stored(db, only_ids=uploaded_ids)
 
     if batch.next_cursor is not None:
         row = db.get(IngestState, RING_CURSOR_KEY)

@@ -184,3 +184,33 @@ def test_failed_attempt_still_zeroes_the_count(client):
         headers=HEADERS,
     ).json()
     assert state["last_added"] == 0
+
+
+def test_upload_decodes_events_on_the_way_in(client):
+    """Storing raw frames without decoding them left nights silently empty:
+    every row present, nothing readable by anything downstream."""
+    # A sleep_acm_period (0x72) the decoder understands: six fixed-point
+    # movement statistics, twelve bytes.
+    body = {
+        "events": [{"tag": 0x72, "timestamp": 5000, "body": "01" * 12}],
+        "next_cursor": 5001,
+        "status": "manual: ok",
+    }
+    state = client.post("/api/mobile/ring-events", json=body, headers=HEADERS).json()
+    assert state["stored_events"] == 1
+
+    stored = client.session.query(RingEventRaw).one()
+    assert stored.decoded is not None, "uploaded events must arrive decoded"
+    assert stored.decoded["_event"] == "sleep_acm_period"
+    assert state["decoded_events"] == 1
+
+
+def test_undecodable_events_still_store(client):
+    """An unknown tag must not fail the upload — the raw frame is the point."""
+    body = {
+        "events": [{"tag": 0xEE, "timestamp": 6000, "body": "ffff"}],
+        "next_cursor": 6001,
+    }
+    state = client.post("/api/mobile/ring-events", json=body, headers=HEADERS).json()
+    assert state["stored_events"] == 1
+    assert state["decoded_events"] == 0

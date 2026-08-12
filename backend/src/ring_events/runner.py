@@ -23,9 +23,23 @@ from .decoders import decode_event, decode_name
 logger = logging.getLogger("RingEventDecode")
 
 
-def decode_stored(db: Session, redecode: bool = False, batch_size: int = 2000) -> Dict[str, int]:
-    """Decodes events lacking a decode (or all of them). Returns per-name counts."""
+def decode_stored(
+    db: Session,
+    redecode: bool = False,
+    batch_size: int = 2000,
+    only_ids: Optional[List[str]] = None,
+) -> Dict[str, int]:
+    """Decodes events lacking a decode (or all of them). Returns per-name counts.
+
+    `only_ids` narrows the pass to rows just uploaded, so the ingest path costs
+    one decode per new event rather than a rescan of every row that has no
+    decoder yet.
+    """
     query = db.query(RingEventRaw)
+    if only_ids is not None:
+        if not only_ids:
+            return {}
+        query = query.filter(RingEventRaw.id.in_(only_ids))
     if not redecode:
         query = query.filter(RingEventRaw.decoded.is_(None))
 
