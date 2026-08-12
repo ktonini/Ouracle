@@ -70,6 +70,8 @@ struct OuracleClient {
         let lastAttemptAt: String?
         let lastStatus: String?
         let lastAdded: Int?
+        let bytesLeft: UInt32?
+        let caughtUp: Bool?
 
         enum CodingKeys: String, CodingKey {
             case cursor
@@ -78,6 +80,8 @@ struct OuracleClient {
             case lastAttemptAt = "last_attempt_at"
             case lastStatus = "last_status"
             case lastAdded = "last_added"
+            case bytesLeft = "bytes_left"
+            case caughtUp = "caught_up"
         }
     }
 
@@ -105,16 +109,21 @@ struct OuracleClient {
     /// `status` is reported even for empty or failed attempts so background
     /// syncing leaves a trace rather than being invisible.
     func uploadRingEvents(
-        _ events: [RingEventPayload], nextCursor: UInt32?, status: String
+        _ events: [RingEventPayload], nextCursor: UInt32?, status: String,
+        bytesLeft: UInt32? = nil
     ) async throws -> RingSyncState {
         struct Body: Encodable {
             let events: [RingEventPayload]
             let next_cursor: UInt32?
             let status: String
+            let bytes_left: UInt32?
         }
         return try await post(
             "api/mobile/ring-events",
-            body: Body(events: events, next_cursor: nextCursor, status: status)
+            body: Body(
+                events: events, next_cursor: nextCursor, status: status,
+                bytes_left: bytesLeft
+            )
         )
     }
 

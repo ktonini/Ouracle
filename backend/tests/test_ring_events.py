@@ -113,3 +113,74 @@ def test_successful_attempt_records_count(client):
     assert state["last_status"] == "manual: ok"
     assert state["last_added"] == 1
     assert state["cursor"] == 11
+
+
+def test_chunked_drain_accumulates_and_advances(client):
+    """A long drain uploads in chunks; each one must land and move the cursor."""
+    for chunk in range(3):
+        base = 1000 + chunk * 100
+        client.post(
+            "/api/mobile/ring-events",
+            json={
+                "events": [
+                    {"tag": 0x60, "timestamp": base + i, "body": "aa"} for i in range(5)
+                ],
+                "next_cursor": base + 5,
+                "status": f"auto: ok (chunk {chunk + 1})",
+                "bytes_left": 900 - chunk * 300,
+            },
+            headers=HEADERS,
+        )
+    state = client.get("/api/mobile/ring-events/state", headers=HEADERS).json()
+    assert state["stored_events"] == 15
+    assert state["cursor"] == 1205
+    assert state["bytes_left"] == 300
+    assert state["caught_up"] is False
+
+
+def test_summary_post_keeps_the_chunk_count(client):
+    """The bare status post that ends a drain must not reset last_added to 0."""
+    client.post(
+        "/api/mobile/ring-events",
+        json={
+            "events": [{"tag": 0x60, "timestamp": 10, "body": "aa"}],
+            "next_cursor": 11,
+            "status": "auto: ok (chunk 1)",
+        },
+        headers=HEADERS,
+    )
+    state = client.post(
+        "/api/mobile/ring-events",
+        json={"events": [], "status": "auto: ok, caught up (1)", "bytes_left": 0},
+        headers=HEADERS,
+    ).json()
+    assert state["last_added"] == 1
+    assert state["bytes_left"] == 0
+    assert state["caught_up"] is True
+    assert state["last_status"] == "auto: ok, caught up (1)"
+
+
+def test_backlog_is_unknown_until_reported(client):
+    state = client.get("/api/mobile/ring-events/state", headers=HEADERS).json()
+    assert state["bytes_left"] is None
+    assert state["caught_up"] is None
+
+
+def test_failed_attempt_still_zeroes_the_count(client):
+    """A failure carries no backlog report, so it is not a drain summary and
+    must not leave the previous run's count looking current."""
+    client.post(
+        "/api/mobile/ring-events",
+        json={
+            "events": [{"tag": 0x60, "timestamp": 7, "body": "aa"}],
+            "next_cursor": 8,
+            "status": "auto: ok (chunk 1)",
+        },
+        headers=HEADERS,
+    )
+    state = client.post(
+        "/api/mobile/ring-events",
+        json={"events": [], "status": "auto failed: ring unavailable"},
+        headers=HEADERS,
+    ).json()
+    assert state["last_added"] == 0

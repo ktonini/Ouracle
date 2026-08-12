@@ -236,22 +236,44 @@ final class RingBLEClient: NSObject {
         var sawSummary = false
     }
 
+    struct SyncOutcome {
+        var uploaded: Int
+        var nextCursor: UInt32
+        /// What the ring still held when the drain stopped. Non-zero means the
+        /// time budget ran out mid-backlog, not that the ring is caught up.
+        var bytesLeft: UInt32
+        var caughtUp: Bool { bytesLeft == 0 }
+    }
+
     /// Drains the ring's history buffer from `cursor`, following the ring's
     /// own protocol: request a batch, collect pushed event frames (tag ≥ 0x41)
     /// until the 0x11 summary arrives, then repeat while `bytes_left > 0`.
     ///
     /// Returns raw frames — decoding happens server-side so it can be improved
     /// without re-reading the ring, whose buffer is finite.
+    /// Uploads in chunks as it goes rather than accumulating the whole backlog:
+    /// the ring produces ~10k events a day, so a drain that had fallen days
+    /// behind would otherwise build one enormous payload and lose all of it if
+    /// the connection dropped near the end. Flushing as we go also advances the
+    /// server cursor, so the next attempt resumes from real progress.
+    ///
     /// - Parameter runSleepAnalysis: asks the ring to run its sleep analysis
     ///   before draining (`0x28`). This makes it emit its detected bedtime
     ///   window; per open_oura it does *not* produce hypnogram stages, which
     ///   the official app finishes elsewhere. Harmless and not a mode change.
+    /// - Parameter timeBudget: how long to keep draining. The loop stops on
+    ///   this rather than on a batch count, so a run always makes as much
+    ///   progress as the time allows regardless of how full each batch is.
+    /// - Returns: how much was uploaded, where to resume, and what the ring
+    ///   still holds — a non-zero `bytesLeft` means come back soon.
     func syncHistory(
         from cursor: UInt32,
-        maxBatches: Int = 40,
+        timeBudget: TimeInterval = 240,
+        chunkSize: Int = 1500,
         runSleepAnalysis: Bool = true,
-        onProgress: @escaping (Int, UInt32) -> Void = { _, _ in }
-    ) async throws -> (events: [RawRingEvent], nextCursor: UInt32) {
+        onProgress: @escaping (Int, UInt32) -> Void = { _, _ in },
+        upload: (_ events: [RawRingEvent], _ nextCursor: UInt32) async throws -> Void
+    ) async throws -> SyncOutcome {
         guard let key = Self.storedAuthKey() else { throw RingBLEError.noAuthKey }
         try await waitForPowerOn()
         let ring = try await findRing()
@@ -274,10 +296,13 @@ final class RingBLEClient: NSObject {
             _ = try? await send(Data([0x28, 0x01, 0x00]), timeout: 8, label: "sleep analysis")
         }
 
-        var collected: [RawRingEvent] = []
+        var pending: [RawRingEvent] = []
+        var uploaded = 0
         var start = cursor
+        var remaining: UInt32 = 0
+        let deadline = Date().addingTimeInterval(timeBudget)
 
-        for _ in 0..<maxBatches {
+        while Date() < deadline {
             var request = Data([0x10, 0x09])
             withUnsafeBytes(of: start.littleEndian) { request.append(contentsOf: $0) }
             request.append(0xFF)  // max events per batch
@@ -286,16 +311,27 @@ final class RingBLEClient: NSObject {
             let batch = try await collectEventBatch(request: request)
             guard !batch.events.isEmpty else { break }
 
-            collected.append(contentsOf: batch.events)
+            pending.append(contentsOf: batch.events)
+            remaining = batch.bytesLeft
             let newest = batch.events.map(\.timestamp).max() ?? start
             let next = newest &+ 1
             guard next > start else { break }
             start = next
-            onProgress(collected.count, batch.bytesLeft)
+            onProgress(uploaded + pending.count, batch.bytesLeft)
 
+            if pending.count >= chunkSize {
+                try await upload(pending, start)
+                uploaded += pending.count
+                pending.removeAll(keepingCapacity: true)
+            }
             if batch.bytesLeft == 0 { break }
         }
-        return (collected, start)
+
+        if !pending.isEmpty {
+            try await upload(pending, start)
+            uploaded += pending.count
+        }
+        return SyncOutcome(uploaded: uploaded, nextCursor: start, bytesLeft: remaining)
     }
 
     /// Writes a request and gathers pushed frames until the 0x11 summary.

@@ -10,11 +10,17 @@ final class AppStore: ObservableObject {
     @AppStorage("healthExportEnabled") var healthExportEnabled: Bool = false
     @AppStorage("pushRegistered") var pushRegistered: Bool = false
     @AppStorage("ringSyncEnabled") var ringSyncEnabled: Bool = true
+    /// The ring still held events we hadn't collected when the last drain
+    /// stopped. Persisted, so a cold start still knows to hurry.
+    @AppStorage("ringBacklog") var ringBacklog: Bool = false
     @Published var lastRingSyncCount: Int?
     private var ringSyncing = false
     private var lastRingSync: Date?
     /// Don't drain more often than this when opening the app repeatedly.
     private let ringSyncInterval: TimeInterval = 30 * 60
+    /// …but while the ring is behind, half an hour between capped runs never
+    /// catches up. Drain on almost every foreground until it reports empty.
+    private let ringCatchUpInterval: TimeInterval = 2 * 60
     @Published var token: String
     @Published var sync: SyncResponse?
     @Published var isLoading = false
@@ -104,8 +110,12 @@ final class AppStore: ObservableObject {
     /// screen still surfaces errors.
     func syncRingHistoryQuietly() async {
         guard ringSyncEnabled, let client else { return }
-        // One attempt per interval; draining is slow and battery-hungry.
-        if let last = lastRingSync, Date().timeIntervalSince(last) < ringSyncInterval {
+        // One attempt per interval; draining is slow and battery-hungry. While
+        // the ring still holds a backlog that pacing loses ground — it produces
+        // events faster than one capped run per half hour can collect them — so
+        // back off only once we know we're caught up.
+        let interval = ringBacklog ? ringCatchUpInterval : ringSyncInterval
+        if let last = lastRingSync, Date().timeIntervalSince(last) < interval {
             return
         }
         guard !ringSyncing else { return }
@@ -114,15 +124,38 @@ final class AppStore: ObservableObject {
 
         do {
             let state = try await client.ringSyncState()
-            let result = try await RingBLEClient().syncHistory(from: state.cursor)
-            _ = try await client.uploadRingEvents(
-                result.events.map {
-                    .init(tag: Int($0.tag), timestamp: $0.timestamp, body: $0.body.hexString)
-                },
-                nextCursor: result.events.isEmpty ? nil : result.nextCursor,
-                status: result.events.isEmpty ? "auto: nothing new" : "auto: ok"
-            )
-            lastRingSyncCount = result.events.count
+            var chunks = 0
+            let result = try await RingBLEClient().syncHistory(
+                from: state.cursor,
+                timeBudget: 120
+            ) { events, nextCursor in
+                chunks += 1
+                _ = try await client.uploadRingEvents(
+                    events.map {
+                        .init(tag: Int($0.tag), timestamp: $0.timestamp, body: $0.body.hexString)
+                    },
+                    nextCursor: nextCursor,
+                    status: "auto: ok (chunk \(chunks))"
+                )
+            }
+            if result.uploaded == 0 {
+                _ = try await client.uploadRingEvents(
+                    [], nextCursor: nil, status: "auto: nothing new",
+                    bytesLeft: result.bytesLeft
+                )
+            } else {
+                // Final status carries the backlog, so the server state shows
+                // whether catching up is working without opening the app.
+                _ = try await client.uploadRingEvents(
+                    [], nextCursor: nil,
+                    status: result.caughtUp
+                        ? "auto: ok, caught up (\(result.uploaded))"
+                        : "auto: ok, \(result.bytesLeft) bytes left (\(result.uploaded))",
+                    bytesLeft: result.bytesLeft
+                )
+            }
+            ringBacklog = !result.caughtUp
+            lastRingSyncCount = result.uploaded
             lastRingSync = Date()
         } catch {
             // Quiet for the user, but recorded server-side so a run of

@@ -138,7 +138,7 @@ struct RingView: View {
 
             Toggle("Sync automatically", isOn: $store.ringSyncEnabled)
 
-            Text("Pulls the ring's own recorded events — sleep stages, HRV, temperature, motion — straight over Bluetooth. Stored raw on your server, independent of Oura's cloud. Runs quietly when you open the app, at most every 30 minutes.")
+            Text("Pulls the ring's own recorded events — sleep stages, HRV, temperature, motion — straight over Bluetooth. Stored raw on your server, independent of Oura's cloud. Runs quietly when you open the app: every couple of minutes while the ring has a backlog to hand over, then at most every 30 minutes once it's caught up.")
                 .font(.footnote)
                 .foregroundStyle(.secondary)
         }
@@ -265,27 +265,46 @@ struct RingView: View {
             let state = try await client.ringSyncState()
             historyStatus = "Draining from cursor \(state.cursor)…"
 
-            let result = try await RingBLEClient().syncHistory(from: state.cursor) { count, left in
-                Task { @MainActor in
-                    historyStatus = "\(count) events… (\(left) bytes left on ring)"
+            // Longer budget than the background drain: the user is watching
+            // this one and can see it working.
+            let result = try await RingBLEClient().syncHistory(
+                from: state.cursor,
+                timeBudget: 600,
+                onProgress: { count, left in
+                    Task { @MainActor in
+                        historyStatus = "\(count) events… (\(left) bytes left on ring)"
+                    }
                 }
-            }
-
-            if result.events.isEmpty {
-                historyStatus = "Ring had nothing new."
-                historyState = try? await client.uploadRingEvents(
-                    [], nextCursor: nil, status: "manual: nothing new"
-                )
-            } else {
-                historyStatus = "Uploading \(result.events.count) events…"
+            ) { events, nextCursor in
                 historyState = try await client.uploadRingEvents(
-                    result.events.map {
+                    events.map {
                         .init(tag: Int($0.tag), timestamp: $0.timestamp, body: $0.body.hexString)
                     },
-                    nextCursor: result.nextCursor,
+                    nextCursor: nextCursor,
                     status: "manual: ok"
                 )
-                historyStatus = "Synced \(result.events.count) events from the ring."
+            }
+
+            store.ringBacklog = !result.caughtUp
+            if result.uploaded == 0 {
+                historyStatus = "Ring had nothing new."
+                historyState = try? await client.uploadRingEvents(
+                    [], nextCursor: nil, status: "manual: nothing new",
+                    bytesLeft: result.bytesLeft
+                )
+            } else if result.caughtUp {
+                historyState = try? await client.uploadRingEvents(
+                    [], nextCursor: nil, status: "manual: ok, caught up",
+                    bytesLeft: 0
+                )
+                historyStatus = "Synced \(result.uploaded) events — ring is caught up."
+            } else {
+                historyState = try? await client.uploadRingEvents(
+                    [], nextCursor: nil, status: "manual: ok, more to collect",
+                    bytesLeft: result.bytesLeft
+                )
+                historyStatus =
+                    "Synced \(result.uploaded) events. \(result.bytesLeft) bytes still on the ring — sync again to continue."
             }
         } catch {
             historyStatus = "Error: \(error.localizedDescription)"

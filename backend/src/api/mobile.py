@@ -819,6 +819,7 @@ def mobile_sleep_sessions(
 RING_CURSOR_KEY = "ring_events:cursor"
 RING_ATTEMPT_KEY = "ring_events:last_attempt"
 RING_ADDED_KEY = "ring_events:last_added"
+RING_BACKLOG_KEY = "ring_events:bytes_left"
 
 
 class RingEventUpload(BaseModel):
@@ -833,6 +834,9 @@ class RingEventBatch(BaseModel):
     # Reported even for empty/failed attempts, so background sync is
     # observable rather than silently doing nothing.
     status: Optional[str] = Field(default=None, max_length=200)
+    # What the ring still held when the drain stopped. Lets the server show
+    # whether the phone is keeping up without having to open the app.
+    bytes_left: Optional[int] = Field(default=None, ge=0)
 
 
 class RingSyncState(BaseModel):
@@ -842,6 +846,8 @@ class RingSyncState(BaseModel):
     last_attempt_at: Optional[datetime] = None
     last_status: Optional[str] = None
     last_added: Optional[int] = None
+    bytes_left: Optional[int] = None
+    caught_up: Optional[bool] = None
 
 
 @mobile_client_router.get("/api/mobile/ring-events/state", response_model=RingSyncState)
@@ -856,6 +862,8 @@ def ring_sync_state(
     newest = db.query(RingEventRaw).order_by(RingEventRaw.timestamp.desc()).first()
     attempt = db.get(IngestState, RING_ATTEMPT_KEY)
     added = db.get(IngestState, RING_ADDED_KEY)
+    backlog = db.get(IngestState, RING_BACKLOG_KEY)
+    left = int(backlog.value) if backlog and backlog.value else None
     return RingSyncState(
         cursor=int(row.value) if row and row.value else 0,
         stored_events=db.query(RingEventRaw).count(),
@@ -863,6 +871,8 @@ def ring_sync_state(
         last_attempt_at=attempt.updated_at if attempt else None,
         last_status=attempt.value if attempt else None,
         last_added=int(added.value) if added and added.value else None,
+        bytes_left=left,
+        caught_up=(left == 0) if left is not None else None,
     )
 
 
@@ -898,7 +908,14 @@ def upload_ring_events(
         row.updated_at = datetime.now(timezone.utc).replace(tzinfo=None)
 
     _record_state(db, RING_ATTEMPT_KEY, batch.status or "ok")
-    _record_state(db, RING_ADDED_KEY, str(len(batch.events)))
+    # A drain uploads in chunks and then posts a bare summary carrying the
+    # backlog. That summary must not reset the count its own chunks just
+    # reported — but an empty post with no backlog is a failed or idle
+    # attempt, which should read as zero rather than as a stale success.
+    if batch.events or batch.bytes_left is None:
+        _record_state(db, RING_ADDED_KEY, str(len(batch.events)))
+    if batch.bytes_left is not None:
+        _record_state(db, RING_BACKLOG_KEY, str(batch.bytes_left))
 
     db.commit()
     return ring_sync_state(_, db)
