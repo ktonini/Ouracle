@@ -131,8 +131,6 @@ def stage_epochs(epochs: List[Epoch]) -> List[Dict[str, Any]]:
         deep_bias = 1.0 - epoch.progress          # 1 at onset → 0 at waking
         rem_bias = epoch.progress
         deep_cut = hr_floor + hr_range * (0.25 + 0.35 * deep_bias)
-        rem_hr_cut = hr_typical - hr_range * 0.15 * rem_bias
-        rem_var_cut = var_typical * (1.15 - 0.35 * rem_bias)
 
         if rate is None:
             stage, confidence = STAGE_LIGHT, 0.2
@@ -140,18 +138,25 @@ def stage_epochs(epochs: List[Epoch]) -> List[Dict[str, Any]]:
             stage, confidence = STAGE_AWAKE, 0.7
         elif not can_separate:
             stage, confidence = STAGE_LIGHT, 0.3
+        elif _looks_like_rem(epoch, ratio_typical, irregular_typical, move_quiet):
+            # Ahead of the deep test on purpose: deep sleep is defined by
+            # metronomic respiration, so an epoch breathing erratically is not
+            # deep however low its heart rate sits.
+            stage, confidence = STAGE_REM, 0.4 + 0.3 * rem_bias
         elif (
             rate <= deep_cut
             and movement <= move_quiet * (1.0 + 0.5 * deep_bias)
             and (variability is None or variability <= var_typical * 1.1)
         ):
             stage, confidence = STAGE_DEEP, 0.4 + 0.3 * deep_bias
-        elif _looks_like_rem(epoch, ratio_typical, irregular_typical, move_quiet):
-            stage, confidence = STAGE_REM, 0.4 + 0.3 * rem_bias
         elif (
-            rate >= rem_hr_cut
+            # Fallback for epochs with no beat intervals to read: heart rate
+            # alone, which is weaker — it mistakes ordinary light sleep for REM
+            # — so it only runs where the better signal is missing.
+            epoch.breath_irregularity is None
+            and rate >= hr_typical - hr_range * 0.15 * rem_bias
             and variability is not None
-            and variability > rem_var_cut
+            and variability > var_typical * (1.15 - 0.35 * rem_bias)
             and movement <= move_quiet * 1.5
         ):
             stage, confidence = STAGE_REM, 0.35 + 0.3 * rem_bias
@@ -179,26 +184,29 @@ def _looks_like_rem(
 ) -> bool:
     """REM by its beat-interval signature rather than average heart rate.
 
-    Needs two of three: variability skewed to the long term, irregular
-    breathing, and reduced parasympathetic tone (low pNN50). Movement must
-    stay low — REM comes with muscle atonia, so a moving epoch is not REM.
+    Irregular breathing is required, not merely one vote among several: it is
+    the one feature that reliably separates REM here, because respiration is
+    erratic in REM and metronomic in every other sleep stage. The variability
+    ratio and pNN50 then corroborate — on their own they drift high across
+    whole stretches of a night and produce false REM.
+
+    Movement must stay low regardless: REM comes with muscle atonia, so a
+    moving epoch is not REM.
     """
-    if ratio_typical is None or irregular_typical is None:
+    if irregular_typical is None or not epoch.breath_irregularity:
         return False
     if (epoch.movement or 0.0) > move_quiet * 1.5:
         return False
+    if epoch.breath_irregularity <= irregular_typical * 1.25:
+        return False
 
-    signals = 0
-    if epoch.sdnn_rmssd is not None and epoch.sdnn_rmssd > ratio_typical * 1.1:
-        signals += 1
-    if (
-        epoch.breath_irregularity is not None
-        and epoch.breath_irregularity > irregular_typical * 1.15
-    ):
-        signals += 1
-    if epoch.pnn50 is not None and epoch.pnn50 < 0.15:
-        signals += 1
-    return signals >= 2
+    ratio_high = (
+        ratio_typical is not None
+        and epoch.sdnn_rmssd is not None
+        and epoch.sdnn_rmssd > ratio_typical * 1.1
+    )
+    tone_low = epoch.pnn50 is not None and epoch.pnn50 < 0.15
+    return ratio_high or tone_low
 
 
 def _smooth(staged: List[Dict[str, Any]]) -> List[Dict[str, Any]]:

@@ -186,3 +186,17 @@ def test_build_epochs_carries_ibi_features():
     assert epochs[0].sdnn_rmssd == 1.8
     assert epochs[0].pnn50 == 0.04
     assert epochs[0].breath_irregularity == 0.5
+
+
+def test_heart_rate_rule_defers_to_beat_intervals():
+    """The HR-only REM rule calls ordinary light sleep REM. Where beat
+    intervals exist they decide instead, and steady breathing means not REM."""
+    epochs = [_epoch(i, 0.02, 60, 25) for i in range(10)]
+    for index in range(6, 9):
+        epochs[index] = _epoch(index, 0.02, 72, 65)  # what the HR rule calls REM
+    for index, epoch in enumerate(epochs):
+        epoch.breath_irregularity = 0.3  # metronomic throughout: no REM anywhere
+        epoch.sdnn_rmssd = 1.0
+        epoch.pnn50 = 0.4
+
+    assert "rem" not in [e["stage"] for e in stage_epochs(epochs)]
