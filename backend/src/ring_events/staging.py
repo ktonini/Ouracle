@@ -46,6 +46,11 @@ class Epoch:
     # average stays low.
     movement_peak: Optional[float] = None
     temperature: Optional[float] = None
+    # From the epoch's raw beat intervals — what actually separates REM from
+    # deep sleep, since a single averaged HRV value cannot.
+    sdnn_rmssd: Optional[float] = None
+    pnn50: Optional[float] = None
+    breath_irregularity: Optional[float] = None
     # Filled in by stage_epochs: position through the night, 0…1. Sleep
     # architecture is strongly time-dependent — deep dominates the first
     # third, REM the last — so this is the single most useful extra feature.
@@ -101,6 +106,14 @@ def stage_epochs(epochs: List[Epoch]) -> List[Dict[str, Any]]:
     hr_range = _percentile(rates, 0.9) - hr_floor
     can_separate = hr_range >= 3.0
 
+    # Baselines for the beat-interval features, again relative to the night.
+    ratios = [e.sdnn_rmssd for e in epochs if e.sdnn_rmssd is not None]
+    irregulars = [
+        e.breath_irregularity for e in epochs if e.breath_irregularity
+    ]
+    ratio_typical = median(ratios) if ratios else None
+    irregular_typical = median(irregulars) if irregulars else None
+
     # Position through the night, used to weight deep vs REM.
     span = max(len(epochs) - 1, 1)
     for index, epoch in enumerate(epochs):
@@ -133,6 +146,8 @@ def stage_epochs(epochs: List[Epoch]) -> List[Dict[str, Any]]:
             and (variability is None or variability <= var_typical * 1.1)
         ):
             stage, confidence = STAGE_DEEP, 0.4 + 0.3 * deep_bias
+        elif _looks_like_rem(epoch, ratio_typical, irregular_typical, move_quiet):
+            stage, confidence = STAGE_REM, 0.4 + 0.3 * rem_bias
         elif (
             rate >= rem_hr_cut
             and variability is not None
@@ -154,6 +169,36 @@ def stage_epochs(epochs: List[Epoch]) -> List[Dict[str, Any]]:
         )
 
     return _smooth(staged)
+
+
+def _looks_like_rem(
+    epoch: Epoch,
+    ratio_typical: Optional[float],
+    irregular_typical: Optional[float],
+    move_quiet: float,
+) -> bool:
+    """REM by its beat-interval signature rather than average heart rate.
+
+    Needs two of three: variability skewed to the long term, irregular
+    breathing, and reduced parasympathetic tone (low pNN50). Movement must
+    stay low — REM comes with muscle atonia, so a moving epoch is not REM.
+    """
+    if ratio_typical is None or irregular_typical is None:
+        return False
+    if (epoch.movement or 0.0) > move_quiet * 1.5:
+        return False
+
+    signals = 0
+    if epoch.sdnn_rmssd is not None and epoch.sdnn_rmssd > ratio_typical * 1.1:
+        signals += 1
+    if (
+        epoch.breath_irregularity is not None
+        and epoch.breath_irregularity > irregular_typical * 1.15
+    ):
+        signals += 1
+    if epoch.pnn50 is not None and epoch.pnn50 < 0.15:
+        signals += 1
+    return signals >= 2
 
 
 def _smooth(staged: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
@@ -198,6 +243,7 @@ def build_epochs(
     variability: Optional[Dict[str, float]] = None,
     movement_peak: Optional[List[Dict[str, Any]]] = None,
     temperature: Optional[List[Dict[str, Any]]] = None,
+    ibi_features: Optional[Dict[str, Dict[str, float]]] = None,
 ) -> List[Epoch]:
     """Join the per-bucket series into aligned epochs, keyed on timestamp."""
     by_time: Dict[str, Epoch] = {}
@@ -222,5 +268,10 @@ def build_epochs(
         epoch_at(point["t"]).movement_peak = point["value"]
     for point in temperature or []:
         epoch_at(point["t"]).temperature = point["value"]
+    for timestamp, features in (ibi_features or {}).items():
+        epoch = epoch_at(timestamp)
+        epoch.sdnn_rmssd = features.get("sdnn_rmssd")
+        epoch.pnn50 = features.get("pnn50")
+        epoch.breath_irregularity = features.get("breath_irregularity")
 
     return [by_time[key] for key in sorted(by_time)]

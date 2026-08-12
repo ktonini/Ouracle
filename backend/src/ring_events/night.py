@@ -89,6 +89,91 @@ def _bucket_minutes(
     ]
 
 
+def _ibi_features(intervals: List[int]) -> Optional[Dict[str, float]]:
+    """Heart-rate variability features from one epoch's beat intervals.
+
+    Chosen to separate REM from deep sleep, which a single averaged HRV number
+    cannot: REM shifts variability toward the long term (sympathetic) with
+    irregular breathing, deep sleep toward beat-to-beat (parasympathetic) with
+    metronomic breathing.
+    """
+    beats = [i for i in intervals if 300 <= i <= 2000]
+    if len(beats) < 20:
+        return None
+
+    mean_ibi = sum(beats) / len(beats)
+    sdnn = (sum((b - mean_ibi) ** 2 for b in beats) / len(beats)) ** 0.5
+
+    diffs = [b - a for a, b in zip(beats, beats[1:]) if abs(b - a) < 300]
+    if not diffs:
+        return None
+    rmssd = (sum(d * d for d in diffs) / len(diffs)) ** 0.5
+    pnn50 = sum(1 for d in diffs if abs(d) > 50) / len(diffs)
+
+    return {
+        "sdnn": round(sdnn, 1),
+        "rmssd": round(rmssd, 1),
+        # >1 means variability is dominated by slow drift rather than
+        # beat-to-beat action: the REM direction.
+        "sdnn_rmssd": round(sdnn / rmssd, 2) if rmssd else 0.0,
+        "pnn50": round(pnn50, 3),
+        "breath_irregularity": _breath_irregularity(beats),
+    }
+
+
+def _breath_irregularity(beats: List[int]) -> float:
+    """How irregular breathing is, from respiratory sinus arrhythmia.
+
+    Breathing modulates beat intervals, so peaks in the detrended IBI series
+    mark breath cycles. Their spacing is near-constant in NREM and erratic in
+    REM; this returns the coefficient of variation of that spacing.
+    """
+    if len(beats) < 30:
+        return 0.0
+    # Detrend against a short moving average to isolate the respiratory wave.
+    window = 5
+    detrended = []
+    for index in range(len(beats) - window):
+        local = beats[index : index + window]
+        detrended.append(beats[index] - sum(local) / window)
+
+    peaks = [
+        index
+        for index in range(1, len(detrended) - 1)
+        if detrended[index] > detrended[index - 1]
+        and detrended[index] >= detrended[index + 1]
+        and detrended[index] > 0
+    ]
+    if len(peaks) < 4:
+        return 0.0
+    spacing = [b - a for a, b in zip(peaks, peaks[1:])]
+    mean_spacing = sum(spacing) / len(spacing)
+    if mean_spacing <= 0:
+        return 0.0
+    deviation = (
+        sum((s - mean_spacing) ** 2 for s in spacing) / len(spacing)
+    ) ** 0.5
+    return round(deviation / mean_spacing, 3)
+
+
+def _features_per_bucket(
+    samples: List[Tuple[float, int]], minutes: int
+) -> Dict[str, Dict[str, float]]:
+    """IBI-derived features per bucket, keyed by the bucket's timestamp."""
+    width = minutes * 60
+    buckets: Dict[int, List[int]] = {}
+    for when, interval in samples:
+        buckets.setdefault(int(when // width) * width, []).append(interval)
+
+    out: Dict[str, Dict[str, float]] = {}
+    for start, intervals in buckets.items():
+        features = _ibi_features(intervals)
+        if features:
+            key = datetime.fromtimestamp(start, timezone.utc).isoformat()
+            out[key] = features
+    return out
+
+
 def _variability_per_bucket(
     samples: List[Tuple[float, int]], minutes: int
 ) -> Dict[str, float]:
@@ -190,6 +275,7 @@ def build_night(
         "average_hr": round(60_000 / (sum(beats) / len(beats))) if beats else None,
         "event_count": len(rows),
         "hrv": variability,
+        "ibi_features": _features_per_bucket(ibi_samples, bucket_minutes),
     }
 
 

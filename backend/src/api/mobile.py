@@ -979,6 +979,7 @@ def ring_night(
         night.pop("hrv", {}),
         movement_peak=night.get("movement_peak", []),
         temperature=night.get("temperature", []),
+        ibi_features=night.pop("ibi_features", {}),
     )
     staged = stage_epochs(epochs)
     night["stages"] = staged

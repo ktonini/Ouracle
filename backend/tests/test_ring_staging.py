@@ -121,3 +121,68 @@ def test_flat_night_is_not_all_deep():
     staged = stage_epochs(epochs)
     assert set(e["stage"] for e in staged) == {"light"}
     assert all(e["confidence"] <= 0.3 for e in staged)  # flagged as low-confidence
+
+
+def _rem_epoch(index: int, **overrides) -> Epoch:
+    epoch = _epoch(index, 0.01, 62, 30)
+    for key, value in overrides.items():
+        setattr(epoch, key, value)
+    return epoch
+
+
+def test_beat_interval_signature_marks_rem():
+    """Long-term-dominant variability plus irregular breathing reads as REM,
+    even though heart rate alone would not distinguish it."""
+    epochs = [
+        _rem_epoch(i, sdnn_rmssd=1.0, pnn50=0.5, breath_irregularity=0.2)
+        for i in range(10)
+    ]
+    # Two epochs carry the REM signature against that baseline.
+    for index in (6, 7):
+        epochs[index].sdnn_rmssd = 2.4
+        epochs[index].breath_irregularity = 0.6
+        epochs[index].pnn50 = 0.05
+    # Give the night some heart-rate spread so staging is not suppressed.
+    for index in (0, 1):
+        epochs[index].heart_rate = 56
+
+    staged = stage_epochs(epochs)
+    assert [staged[i]["stage"] for i in (6, 7)] == ["rem", "rem"]
+
+
+def test_movement_rules_out_rem_signature():
+    """REM comes with muscle atonia — a moving epoch is not REM whatever the
+    beat intervals say."""
+
+    def night(movement: float):
+        epochs = [
+            _rem_epoch(i, sdnn_rmssd=1.0, pnn50=0.5, breath_irregularity=0.2)
+            for i in range(10)
+        ]
+        for index in (0, 1):
+            epochs[index].heart_rate = 56
+        # Quiet neighbours, so the smoother judges the pair on its own merits.
+        for index in (5, 8):
+            epochs[index].hr_variability = 10
+        # A pair, not a lone epoch — the smoother rejects single-epoch stages.
+        for index in (6, 7):
+            epochs[index].sdnn_rmssd = 2.4
+            epochs[index].breath_irregularity = 0.6
+            epochs[index].pnn50 = 0.05
+            epochs[index].movement = movement
+        return [stage_epochs(epochs)[i]["stage"] for i in (6, 7)]
+
+    assert night(0.01) == ["rem", "rem"]  # control: the signature does read as REM
+    assert "rem" not in night(0.09)       # same signature, but the body is moving
+
+
+def test_build_epochs_carries_ibi_features():
+    t0 = START.isoformat()
+    epochs = build_epochs(
+        heart_rate=[{"t": t0, "value": 60.0}],
+        movement=[{"t": t0, "value": 0.05}],
+        ibi_features={t0: {"sdnn_rmssd": 1.8, "pnn50": 0.04, "breath_irregularity": 0.5}},
+    )
+    assert epochs[0].sdnn_rmssd == 1.8
+    assert epochs[0].pnn50 == 0.04
+    assert epochs[0].breath_irregularity == 0.5

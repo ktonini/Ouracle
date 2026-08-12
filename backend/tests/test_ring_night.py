@@ -157,3 +157,63 @@ def test_movement_subsamples_do_not_clobber_the_clock(db_session):
     assert night["heart_rate"], "heart rate should be present"
     for point in night["heart_rate"] + night["movement"]:
         assert point["t"].startswith("2026-08-05"), point["t"]
+
+
+def test_ibi_features_separate_steady_from_erratic_beats():
+    """Deep sleep's metronomic beats and REM's erratic ones must not look alike."""
+    from backend.src.ring_events.night import _ibi_features
+
+    # Beat-to-beat jitter around a fixed mean: high RMSSD, low SDNN/RMSSD.
+    steady = [1000 + (30 if i % 2 else -30) for i in range(60)]
+    # Slow drift with little beat-to-beat change: the REM direction.
+    drifting = [1000 + i * 8 for i in range(60)]
+
+    steady_features = _ibi_features(steady)
+    drifting_features = _ibi_features(drifting)
+    assert steady_features["pnn50"] > 0.9
+    assert drifting_features["pnn50"] == 0.0
+    assert drifting_features["sdnn_rmssd"] > steady_features["sdnn_rmssd"]
+
+
+def test_ibi_features_need_enough_beats():
+    from backend.src.ring_events.night import _ibi_features
+
+    assert _ibi_features([1000] * 5) is None
+    assert _ibi_features([]) is None
+
+
+def test_breath_irregularity_rises_with_erratic_respiration():
+    """Evenly spaced respiratory waves score lower than jumbled ones."""
+    import math
+
+    from backend.src.ring_events.night import _breath_irregularity
+
+    regular = [round(1000 + 40 * math.sin(i * 2 * math.pi / 12)) for i in range(200)]
+    # Same amplitude, but the breath period keeps changing.
+    erratic = []
+    phase = 0.0
+    for index in range(200):
+        period = 6 + (index // 20) % 14
+        phase += 2 * math.pi / period
+        erratic.append(round(1000 + 40 * math.sin(phase)))
+
+    assert _breath_irregularity(erratic) > _breath_irregularity(regular)
+
+
+def test_night_exposes_per_bucket_ibi_features(db_session):
+    _sync(db_session, 0)
+    start = datetime(2026, 8, 5, 6, 0, tzinfo=timezone.utc)
+    db_session.add(
+        RingEventRaw(
+            id="60-f", tag=0x60, timestamp=to_ring_ds(start, EPOCH) + 60, body="",
+            decoded={"ibi_ms": [1000 + (20 if i % 2 else -20) for i in range(40)]},
+        )
+    )
+    db_session.commit()
+    night = build_night(
+        db_session, start, datetime(2026, 8, 5, 7, tzinfo=timezone.utc)
+    )
+    assert night["ibi_features"]
+    features = next(iter(night["ibi_features"].values()))
+    assert features["rmssd"] > 0
+    assert "breath_irregularity" in features
