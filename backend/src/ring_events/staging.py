@@ -75,8 +75,19 @@ def stage_epochs(epochs: List[Epoch]) -> List[Dict[str, Any]]:
 
     # Movement: a quiet night has a very low median, so scale off it.
     move_quiet = _percentile(movements, 0.5) if movements else 0.0
-    move_active = _percentile(movements, 0.9) if movements else 0.0
-    wake_threshold = max(move_active, move_quiet * 4, 0.15)
+
+    # Wake is judged on peak movement, so its threshold must come from the
+    # peak distribution — comparing peaks against a mean-derived threshold
+    # fires on ordinary light sleep.
+    peaks = [
+        e.movement_peak if e.movement_peak is not None else e.movement
+        for e in epochs
+        if (e.movement_peak if e.movement_peak is not None else e.movement) is not None
+    ]
+    peak_typical = _percentile(peaks, 0.5) if peaks else 0.0
+    wake_threshold = max(
+        _percentile(peaks, 0.9) if peaks else 0.0, peak_typical * 3, 0.2
+    )
 
     hr_floor = _percentile(rates, 0.1)
     hr_typical = median(rates)
