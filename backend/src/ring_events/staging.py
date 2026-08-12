@@ -42,6 +42,14 @@ class Epoch:
     movement: Optional[float]
     heart_rate: Optional[float]
     hr_variability: Optional[float]
+    # Peak movement in the epoch: a brief burst signals waking even when the
+    # average stays low.
+    movement_peak: Optional[float] = None
+    temperature: Optional[float] = None
+    # Filled in by stage_epochs: position through the night, 0…1. Sleep
+    # architecture is strongly time-dependent — deep dominates the first
+    # third, REM the last — so this is the single most useful extra feature.
+    progress: float = 0.0
 
 
 def _percentile(values: List[float], fraction: float) -> float:
@@ -82,31 +90,45 @@ def stage_epochs(epochs: List[Epoch]) -> List[Dict[str, Any]]:
     hr_range = _percentile(rates, 0.9) - hr_floor
     can_separate = hr_range >= 3.0
 
+    # Position through the night, used to weight deep vs REM.
+    span = max(len(epochs) - 1, 1)
+    for index, epoch in enumerate(epochs):
+        epoch.progress = index / span
+
     staged: List[Dict[str, Any]] = []
     for epoch in epochs:
         movement = epoch.movement or 0.0
+        peak = epoch.movement_peak if epoch.movement_peak is not None else movement
         rate = epoch.heart_rate
         variability = epoch.hr_variability
 
+        # Deep sleep concentrates early, REM late: shift each threshold with
+        # time rather than applying one rule across the whole night.
+        deep_bias = 1.0 - epoch.progress          # 1 at onset → 0 at waking
+        rem_bias = epoch.progress
+        deep_cut = hr_floor + hr_range * (0.25 + 0.35 * deep_bias)
+        rem_hr_cut = hr_typical - hr_range * 0.15 * rem_bias
+        rem_var_cut = var_typical * (1.15 - 0.35 * rem_bias)
+
         if rate is None:
             stage, confidence = STAGE_LIGHT, 0.2
-        elif movement >= wake_threshold:
+        elif peak >= wake_threshold:
             stage, confidence = STAGE_AWAKE, 0.7
         elif not can_separate:
             stage, confidence = STAGE_LIGHT, 0.3
         elif (
-            rate <= hr_floor + hr_range * 0.35
-            and movement <= move_quiet
-            and (variability is None or variability <= var_typical)
+            rate <= deep_cut
+            and movement <= move_quiet * (1.0 + 0.5 * deep_bias)
+            and (variability is None or variability <= var_typical * 1.1)
         ):
-            stage, confidence = STAGE_DEEP, 0.6
+            stage, confidence = STAGE_DEEP, 0.4 + 0.3 * deep_bias
         elif (
-            rate >= hr_typical
+            rate >= rem_hr_cut
             and variability is not None
-            and variability > var_typical
+            and variability > rem_var_cut
             and movement <= move_quiet * 1.5
         ):
-            stage, confidence = STAGE_REM, 0.5
+            stage, confidence = STAGE_REM, 0.35 + 0.3 * rem_bias
         else:
             stage, confidence = STAGE_LIGHT, 0.5
 
@@ -114,7 +136,7 @@ def stage_epochs(epochs: List[Epoch]) -> List[Dict[str, Any]]:
             {
                 "t": epoch.start.isoformat(),
                 "stage": stage,
-                "confidence": confidence,
+                "confidence": round(confidence, 2),
                 "heart_rate": round(rate, 1) if rate is not None else None,
                 "movement": round(movement, 3),
             }
@@ -163,25 +185,31 @@ def build_epochs(
     heart_rate: List[Dict[str, Any]],
     movement: List[Dict[str, Any]],
     variability: Optional[Dict[str, float]] = None,
+    movement_peak: Optional[List[Dict[str, Any]]] = None,
+    temperature: Optional[List[Dict[str, Any]]] = None,
 ) -> List[Epoch]:
     """Join the per-bucket series into aligned epochs, keyed on timestamp."""
     by_time: Dict[str, Epoch] = {}
-    for point in heart_rate:
-        by_time[point["t"]] = Epoch(
-            start=datetime.fromisoformat(point["t"]),
-            movement=None,
-            heart_rate=point["value"],
-            hr_variability=(variability or {}).get(point["t"]),
-        )
-    for point in movement:
-        existing = by_time.get(point["t"])
-        if existing:
-            existing.movement = point["value"]
-        else:
-            by_time[point["t"]] = Epoch(
-                start=datetime.fromisoformat(point["t"]),
-                movement=point["value"],
+
+    def epoch_at(timestamp: str) -> Epoch:
+        if timestamp not in by_time:
+            by_time[timestamp] = Epoch(
+                start=datetime.fromisoformat(timestamp),
+                movement=None,
                 heart_rate=None,
                 hr_variability=None,
             )
+        return by_time[timestamp]
+
+    for point in heart_rate:
+        epoch = epoch_at(point["t"])
+        epoch.heart_rate = point["value"]
+        epoch.hr_variability = (variability or {}).get(point["t"])
+    for point in movement:
+        epoch_at(point["t"]).movement = point["value"]
+    for point in movement_peak or []:
+        epoch_at(point["t"]).movement_peak = point["value"]
+    for point in temperature or []:
+        epoch_at(point["t"]).temperature = point["value"]
+
     return [by_time[key] for key in sorted(by_time)]

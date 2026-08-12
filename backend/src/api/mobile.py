@@ -974,7 +974,11 @@ def ring_night(
     # Stages are derived here, not read from the ring: it streams the inputs
     # but finishes staging elsewhere.
     epochs = build_epochs(
-        night.get("heart_rate", []), night.get("movement", []), night.pop("hrv", {})
+        night.get("heart_rate", []),
+        night.get("movement", []),
+        night.pop("hrv", {}),
+        movement_peak=night.get("movement_peak", []),
+        temperature=night.get("temperature", []),
     )
     staged = stage_epochs(epochs)
     night["stages"] = staged

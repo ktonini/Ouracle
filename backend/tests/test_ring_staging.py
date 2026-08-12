@@ -4,6 +4,7 @@ from datetime import datetime, timedelta, timezone
 
 from backend.src.ring_events.staging import (
     Epoch,
+    _smooth,
     build_epochs,
     stage_epochs,
     summarise,
@@ -51,18 +52,35 @@ def test_default_stage_is_light():
 
 
 def test_single_epoch_flicker_is_smoothed():
-    epochs = [_epoch(i, 0.02, 64, 30) for i in range(5)]
-    # One epoch dips to deep territory between identical neighbours.
-    epochs[2] = _epoch(2, 0.01, 50, 15)
-    stages = [e["stage"] for e in stage_epochs(epochs)]
-    assert stages[2] == stages[1]  # flicker removed
+    """A lone deviating epoch between matching neighbours is noise."""
+    staged = _smooth([
+        {"stage": "light", "confidence": 0.5},
+        {"stage": "deep", "confidence": 0.6},
+        {"stage": "light", "confidence": 0.5},
+    ])
+    assert [e["stage"] for e in staged] == ["light", "light", "light"]
+    assert staged[1]["confidence"] <= 0.4  # marked less certain
 
 
 def test_wake_epochs_are_never_smoothed_away():
-    epochs = [_epoch(i, 0.02, 64, 30) for i in range(5)]
-    epochs[2] = _epoch(2, 3.0, 80)  # genuine brief awakening
-    stages = [e["stage"] for e in stage_epochs(epochs)]
-    assert stages[2] == "awake"
+    """Brief awakenings are real and must survive smoothing."""
+    staged = _smooth([
+        {"stage": "light", "confidence": 0.5},
+        {"stage": "awake", "confidence": 0.7},
+        {"stage": "light", "confidence": 0.5},
+    ])
+    assert staged[1]["stage"] == "awake"
+
+
+def test_genuine_transitions_are_kept():
+    """Two epochs of the same stage is a transition, not a flicker."""
+    staged = _smooth([
+        {"stage": "light", "confidence": 0.5},
+        {"stage": "deep", "confidence": 0.6},
+        {"stage": "deep", "confidence": 0.6},
+        {"stage": "light", "confidence": 0.5},
+    ])
+    assert [e["stage"] for e in staged] == ["light", "deep", "deep", "light"]
 
 
 def test_summary_counts_minutes_and_efficiency():

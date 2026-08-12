@@ -63,19 +63,27 @@ def to_ring_ds(when: datetime, offset: float) -> int:
 
 
 def _bucket_minutes(
-    samples: List[Tuple[float, float]], minutes: int = 5
+    samples: List[Tuple[float, float]], minutes: int = 5, stat: str = "mean"
 ) -> List[Dict[str, Any]]:
-    """Average samples into fixed buckets: [(unix_seconds, value), …]."""
+    """Aggregate samples into fixed buckets: [(unix_seconds, value), …].
+
+    `stat` selects mean or max — movement peaks matter for wake detection,
+    where an average washes out a brief but decisive burst.
+    """
     if not samples:
         return []
     width = minutes * 60
     buckets: Dict[int, List[float]] = {}
     for when, value in samples:
         buckets.setdefault(int(when // width) * width, []).append(value)
+
+    def reduce(values: List[float]) -> float:
+        return max(values) if stat == "max" else sum(values) / len(values)
+
     return [
         {
             "t": datetime.fromtimestamp(start, timezone.utc).isoformat(),
-            "value": round(sum(values) / len(values), 2),
+            "value": round(reduce(values), 3),
         }
         for start, values in sorted(buckets.items())
     ]
@@ -148,7 +156,11 @@ def build_night(
         elif row.tag == TAG_SLEEP_ACM:
             values = decoded.get("acm_mad") or []
             if values:
-                movement.append((when, sum(values) / len(values)))
+                # Six sub-samples spanning the period: keep them separately so
+                # buckets can see peaks, not just the period's average.
+                span = 60.0
+                for offset, value in enumerate(values):
+                    movement.append((when + offset * span / len(values), value))
 
         elif row.tag == TAG_TEMP_SLEEP:
             temps = decoded.get("temps_c") or []
@@ -169,6 +181,7 @@ def build_night(
         "end": end.replace(tzinfo=timezone.utc).isoformat(),
         "heart_rate": hr_series,
         "movement": _bucket_minutes(movement, bucket_minutes),
+        "movement_peak": _bucket_minutes(movement, bucket_minutes, stat="max"),
         "temperature": _bucket_minutes(temperature, bucket_minutes),
         "beats": len(beats),
         "lowest_hr": lowest,

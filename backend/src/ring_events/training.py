@@ -66,6 +66,12 @@ def build_dataset(db: Session) -> List[Dict[str, Any]]:
         movement_by_time = {
             point["t"]: point["value"] for point in night.get("movement", [])
         }
+        peak_by_time = {
+            point["t"]: point["value"] for point in night.get("movement_peak", [])
+        }
+        temp_by_time = {
+            point["t"]: point["value"] for point in night.get("temperature", [])
+        }
         # Our buckets sit on absolute 5-minute boundaries; the cloud's epochs
         # start at bedtime. Snap each label to the bucket containing it.
         for when, stage in labels:
@@ -81,6 +87,8 @@ def build_dataset(db: Session) -> List[Dict[str, Any]]:
                     "t": bucket,
                     "heart_rate": heart_rate,
                     "movement": movement_by_time.get(bucket),
+                    "movement_peak": peak_by_time.get(bucket),
+                    "temperature": temp_by_time.get(bucket),
                     "hrv": variability.get(bucket),
                     "label": stage,
                 }
@@ -112,6 +120,16 @@ def evaluate_heuristic(db: Session) -> Dict[str, Any]:
                 if r["movement"] is not None
             ],
             {r["t"]: r["hrv"] for r in rows if r["hrv"] is not None},
+            movement_peak=[
+                {"t": r["t"], "value": r["movement_peak"]}
+                for r in rows
+                if r.get("movement_peak") is not None
+            ],
+            temperature=[
+                {"t": r["t"], "value": r["temperature"]}
+                for r in rows
+                if r.get("temperature") is not None
+            ],
         )
         predictions = {e["t"]: e["stage"] for e in stage_epochs(epochs)}
         for row in rows:
