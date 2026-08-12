@@ -128,3 +128,32 @@ def test_lowest_hr_ignores_single_outlier_beats(db_session):
         db_session, start, datetime(2026, 8, 5, 7, tzinfo=timezone.utc)
     )
     assert night["lowest_hr"] > 45  # not the 30 bpm artefact
+
+
+def test_movement_subsamples_do_not_clobber_the_clock(db_session):
+    """Regression: a loop variable named `offset` overwrote the clock offset,
+    so every timestamp after the first movement event landed in 1970."""
+    _sync(db_session, 0)
+    start = datetime(2026, 8, 5, 6, 0, tzinfo=timezone.utc)
+    base = to_ring_ds(start, EPOCH)
+    # Movement first, then heart rate — the order that triggered the bug.
+    db_session.add(
+        RingEventRaw(
+            id="72-x", tag=0x72, timestamp=base + 60, body="",
+            decoded={"acm_mad": [0.1] * 6},
+        )
+    )
+    db_session.add(
+        RingEventRaw(
+            id="60-x", tag=0x60, timestamp=base + 1200, body="",
+            decoded={"ibi_ms": [1000] * 6},
+        )
+    )
+    db_session.commit()
+
+    night = build_night(
+        db_session, start, datetime(2026, 8, 5, 7, tzinfo=timezone.utc)
+    )
+    assert night["heart_rate"], "heart rate should be present"
+    for point in night["heart_rate"] + night["movement"]:
+        assert point["t"].startswith("2026-08-05"), point["t"]

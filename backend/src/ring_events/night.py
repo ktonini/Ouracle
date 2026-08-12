@@ -158,9 +158,11 @@ def build_night(
             if values:
                 # Six sub-samples spanning the period: keep them separately so
                 # buckets can see peaks, not just the period's average.
+                # NB: don't name the loop variable `offset` — Python leaks it
+                # to function scope and it would clobber the clock offset.
                 span = 60.0
-                for offset, value in enumerate(values):
-                    movement.append((when + offset * span / len(values), value))
+                for position, value in enumerate(values):
+                    movement.append((when + position * span / len(values), value))
 
         elif row.tag == TAG_TEMP_SLEEP:
             temps = decoded.get("temps_c") or []
