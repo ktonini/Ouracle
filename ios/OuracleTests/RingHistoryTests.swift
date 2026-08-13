@@ -60,6 +60,45 @@ final class RingHistoryTests: XCTestCase {
         XCTAssertTrue(batch.events[0].body.isEmpty)
     }
 
+    /// Regression: the ring packs several events into one notification. The
+    /// length byte delimits them; ignoring it glued every event after the
+    /// first onto the first one's body, so they vanished. 242 stored rows
+    /// turned out to be whole runs of events hidden inside a single record.
+    func testSplitsSeveralEventsInOnePacket() {
+        var batch = RingBLEClient.EventBatch()
+        // Two 18-byte frames back to back, as captured from the ring:
+        // 0x60 (IBI) then 0x81 (raw PPG), each ts + 14 bytes of body.
+        ingest(
+            "6012" + "a27d1500" + "696a6a6b7072c8c3bfa3aec04a31"
+                + "8112" + "a37d1500" + "02161d211f0f0e09020101038112",
+            into: &batch
+        )
+        XCTAssertEqual(batch.events.count, 2)
+        XCTAssertEqual(batch.events.map(\.tag), [0x60, 0x81])
+        XCTAssertEqual(batch.events[0].timestamp, 0x00157DA2)
+        XCTAssertEqual(batch.events[1].timestamp, 0x00157DA3)
+        XCTAssertEqual(batch.events[0].body.hexString, "696a6a6b7072c8c3bfa3aec04a31")
+        XCTAssertEqual(batch.events[0].body.count, 14)
+        XCTAssertEqual(batch.events[1].body.count, 14)
+    }
+
+    /// A packet cut mid-event must drop the fragment, not store it as a whole
+    /// event with a short body — that is how bad data becomes plausible data.
+    func testStopsAtATruncatedTrailingFrame() {
+        var batch = RingBLEClient.EventBatch()
+        ingest("5506e8030000aabb" + "6012a27d1500" + "6969", into: &batch)
+        XCTAssertEqual(batch.events.count, 1)
+        XCTAssertEqual(batch.events[0].tag, 0x55)
+    }
+
+    func testSummaryAfterEventsInTheSamePacketKeepsBoth() {
+        var batch = RingBLEClient.EventBatch()
+        ingest("5506e8030000aabb" + "11060800" + "9e0e0000", into: &batch)
+        XCTAssertEqual(batch.events.count, 1)
+        XCTAssertTrue(batch.sawSummary)
+        XCTAssertEqual(batch.bytesLeft, 3742)
+    }
+
     func testCollectsMultipleEventsInOrder() {
         var batch = RingBLEClient.EventBatch()
         ingest("4104d2040000", into: &batch)

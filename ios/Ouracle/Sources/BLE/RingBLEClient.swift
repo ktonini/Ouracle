@@ -714,26 +714,44 @@ final class RingBLEClient: NSObject {
     /// History events use tags ≥ 0x41 and start with a little-endian
     /// deciseconds timestamp; tag 0x11 is the batch summary carrying
     /// `bytes_left`, which drives the drain loop.
+    /// Splits a notification into events: `<tag><length><timestamp×4><body>`,
+    /// repeated. The ring packs several events into one packet, so the length
+    /// byte is what delimits them — reading only the first and treating the
+    /// rest of the packet as its body glued whole runs of events onto a single
+    /// record, losing every one after the first.
     nonisolated static func ingest(_ packet: Data, into batch: inout EventBatch) {
-        guard packet.count >= 2 else { return }
-        let tag = packet[0]
-        let payload = packet.dropFirst(2)
+        let bytes = [UInt8](packet)
+        var index = 0
 
-        if tag == 0x11 {
-            guard payload.count >= 6 else { return }
-            let bytes = [UInt8](payload)
-            batch.bytesLeft = UInt32(bytes[2]) | UInt32(bytes[3]) << 8
-                | UInt32(bytes[4]) << 16 | UInt32(bytes[5]) << 24
-            batch.sawSummary = true
-            return
+        while index + 2 <= bytes.count {
+            let tag = bytes[index]
+
+            // The summary ends a batch and is read at fixed offsets, not via
+            // the length byte — don't make the terminator depend on framing
+            // holding for a frame that isn't an event.
+            if tag == 0x11 {
+                guard index + 8 <= bytes.count else { return }
+                batch.bytesLeft = UInt32(bytes[index + 4]) | UInt32(bytes[index + 5]) << 8
+                    | UInt32(bytes[index + 6]) << 16 | UInt32(bytes[index + 7]) << 24
+                batch.sawSummary = true
+                return
+            }
+
+            let length = Int(bytes[index + 1])
+            let start = index + 2
+            // A truncated trailing frame means the packet was cut mid-event;
+            // stop rather than store a fragment as if it were whole.
+            guard length >= 4, start + length <= bytes.count else { return }
+            let payload = Array(bytes[start ..< start + length])
+            index = start + length
+
+            guard tag >= 0x41 else { continue }
+            let timestamp = UInt32(payload[0]) | UInt32(payload[1]) << 8
+                | UInt32(payload[2]) << 16 | UInt32(payload[3]) << 24
+            batch.events.append(
+                RawRingEvent(tag: tag, timestamp: timestamp, body: Data(payload.dropFirst(4)))
+            )
         }
-        guard tag >= 0x41, payload.count >= 4 else { return }
-        let bytes = [UInt8](payload)
-        let timestamp = UInt32(bytes[0]) | UInt32(bytes[1]) << 8
-            | UInt32(bytes[2]) << 16 | UInt32(bytes[3]) << 24
-        batch.events.append(
-            RawRingEvent(tag: tag, timestamp: timestamp, body: Data(payload.dropFirst(4)))
-        )
     }
 
     /// Nonce response: `2f 10 2c <15-byte nonce>`

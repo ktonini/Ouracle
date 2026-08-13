@@ -93,3 +93,9 @@ targets:
       - OuracleTests
     dependencies:
       - target: Ouracle
+    settings:
+      base:
+        # Without a generated Info.plist the test bundle can't be signed, so
+        # `xcodebuild test` fails before running anything.
+        GENERATE_INFOPLIST_FILE: YES
+        CODE_SIGNING_ALLOWED: NO
