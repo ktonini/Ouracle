@@ -174,3 +174,37 @@ final class RingRadioAccessTests: XCTestCase {
         XCTAssertTrue(ran)
     }
 }
+
+final class RingCursorTests: XCTestCase {
+    private func events(_ stamps: [UInt32]) -> [RingBLEClient.RawRingEvent] {
+        stamps.map { .init(tag: 0x60, timestamp: $0, body: Data()) }
+    }
+
+    func testCursorAdvancesPastTheBatch() {
+        let next = RingBLEClient.nextCursor(after: 1000, events: events([1000, 1200, 1100]))
+        XCTAssertEqual(next, 1201)
+    }
+
+    /// Regression: the ring records while we're connected, so a batch can carry
+    /// an event stamped with the current clock. Taking the maximum let one of
+    /// those leap the cursor over 4.6 days of history that was never re-read.
+    func testLiveEventDoesNotLeapTheCursor() {
+        let now: UInt32 = 7_343_695          // "right now" on the ring's clock
+        let history: [UInt32] = [2_655_604, 2_655_605, 2_655_700]
+        let next = RingBLEClient.nextCursor(after: 2_655_600, events: events(history + [now]))
+        XCTAssertEqual(next, 2_655_701, "must resume just after the history, not after the live event")
+    }
+
+    /// A real gap in the ring's history must still be crossed, or the drain
+    /// would stall forever at the edge of a day it wasn't worn.
+    func testGenuineGapStillAdvances() {
+        let start: UInt32 = 1000
+        let afterGap: UInt32 = 1000 + 48 * 60 * 60 * 10   // two days later
+        let next = RingBLEClient.nextCursor(after: start, events: events([afterGap]))
+        XCTAssertEqual(next, afterGap + 1)
+    }
+
+    func testEmptyBatchLeavesTheCursorAlone() {
+        XCTAssertEqual(RingBLEClient.nextCursor(after: 1000, events: []), 1000)
+    }
+}

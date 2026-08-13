@@ -366,8 +366,7 @@ final class RingBLEClient: NSObject {
 
             pending.append(contentsOf: batch.events)
             remaining = batch.bytesLeft
-            let newest = batch.events.map(\.timestamp).max() ?? start
-            let next = newest &+ 1
+            let next = Self.nextCursor(after: start, events: batch.events)
             guard next > start else { break }
             start = next
             onProgress(uploaded + pending.count, batch.bytesLeft)
@@ -385,6 +384,26 @@ final class RingBLEClient: NSObject {
             uploaded += pending.count
         }
         return SyncOutcome(uploaded: uploaded, nextCursor: start, bytesLeft: remaining)
+    }
+
+    /// How far past a batch's own events a timestamp may sit and still be
+    /// treated as history rather than something happening right now.
+    static let liveEventHorizon: UInt32 = 24 * 60 * 60 * 10  // 24h in deciseconds
+
+    /// Where to resume after a batch.
+    ///
+    /// Not simply the largest timestamp: the ring keeps recording while we are
+    /// connected, so a batch can carry a motion or step event stamped with the
+    /// current clock. Taking the maximum let one of those leap the cursor over
+    /// everything still unread — a single live event skipped 4.6 days of
+    /// history in one step, and the drain then reported itself caught up.
+    nonisolated static func nextCursor(after start: UInt32, events: [RawRingEvent]) -> UInt32 {
+        let stamps = events.map(\.timestamp).sorted()
+        guard let earliest = stamps.first else { return start }
+        let base = max(start, earliest)
+        let horizon = base &+ liveEventHorizon
+        let newest = stamps.last(where: { $0 <= horizon }) ?? base
+        return max(newest, base) &+ 1
     }
 
     /// Writes a request and gathers pushed frames until the 0x11 summary.
