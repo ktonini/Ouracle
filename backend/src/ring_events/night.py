@@ -293,6 +293,8 @@ def detected_bedtimes(db: Session) -> List[Dict[str, Any]]:
     windows = []
     for row in rows:
         decoded = row.decoded
+        if not decoded:
+            continue
         start = decoded.get("bedtime_start_ds")
         end = decoded.get("bedtime_end_ds")
         if not start or not end:

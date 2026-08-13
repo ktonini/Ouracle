@@ -126,3 +126,34 @@ def test_repeated_events_in_one_run_do_not_collide(db_session):
     assert result["events_recovered"] == 2
     assert result["unique_events"] == 1
     assert db_session.query(RingEventRaw).count() == 2
+
+
+def test_cleared_decode_is_sql_null_so_it_gets_redecoded(db_session):
+    """Regression: a plain JSON column stores None as the JSON value 'null',
+    which satisfies "IS NOT NULL" but reads back as None. Repaired rows then
+    looked decoded to every query, crashed on use, and were never re-decoded."""
+    from backend.src.ring_events.runner import decode_stored
+
+    # 0x72 needs 12 bytes; give it that plus a packed 0x81 behind it.
+    parent = bytes.fromhex("01" * 12)
+    body = parent + frame(0x81, 1401, bytes(14))
+    db_session.add(
+        RingEventRaw(
+            id="72-1400", tag=0x72, timestamp=1400, body=body.hex(),
+            decoded={"stale": True},
+        )
+    )
+    db_session.commit()
+
+    repair_packed(db_session, apply=True)
+    # The stale decode must be gone in a way the next pass can see.
+    assert (
+        db_session.query(RingEventRaw)
+        .filter(RingEventRaw.decoded.is_(None))
+        .count()
+        == 2
+    )
+    decode_stored(db_session)
+    parent_row = db_session.get(RingEventRaw, "72-1400")
+    assert parent_row.decoded is not None
+    assert parent_row.decoded["_event"] == "sleep_acm_period"

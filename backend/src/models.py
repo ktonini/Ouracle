@@ -216,7 +216,12 @@ class RingEventRaw(Base):
     timestamp: Mapped[int] = mapped_column(Integer, index=True)
     body: Mapped[str] = mapped_column(Text)  # hex
     received_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
-    decoded: Mapped[Optional[dict]] = mapped_column(JSON, nullable=True)
+    # none_as_null: plain JSON stores Python None as the JSON value 'null',
+    # which passes an "IS NOT NULL" filter but reads back as None — so a
+    # cleared decode looked present to every query and blew up on use.
+    decoded: Mapped[Optional[dict]] = mapped_column(
+        JSON(none_as_null=True), nullable=True
+    )
 
 
 class IngestState(Base):
