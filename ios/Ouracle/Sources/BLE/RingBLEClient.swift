@@ -96,8 +96,37 @@ final class RingBLEClient: NSObject {
 
     // MARK: - Public API
 
+    // MARK: - Exclusive radio access
+
+    /// The ring holds one conversation at a time, and its auth handshake is a
+    /// stateful challenge: if a battery read and a history drain overlap, one
+    /// of them waits forever for a nonce the other already consumed. That is
+    /// exactly what opening the Ring screen did — the view reads the battery
+    /// while the app kicks off a foreground sync, each on its own client.
+    ///
+    /// Every operation that talks to the ring goes through here, so a second
+    /// caller queues instead of colliding.
+    private static var radioBusy = false
+    private static var radioWaiting: [CheckedContinuation<Void, Never>] = []
+
+    static func exclusive<T>(_ body: () async throws -> T) async rethrows -> T {
+        while radioBusy {
+            await withCheckedContinuation { radioWaiting.append($0) }
+        }
+        radioBusy = true
+        defer {
+            radioBusy = false
+            if !radioWaiting.isEmpty { radioWaiting.removeFirst().resume() }
+        }
+        return try await body()
+    }
+
     /// Reads firmware/serial-level device info. Requires no auth key.
     func readInfo() async throws -> RingInfo {
+        try await Self.exclusive { try await self._readInfo() }
+    }
+
+    private func _readInfo() async throws -> RingInfo {
         try await waitForPowerOn()
         let ring = try await findRing()
         try await connect(ring)
@@ -110,6 +139,10 @@ final class RingBLEClient: NSObject {
 
     /// Reads the ring's battery level. Requires the 16-byte app-auth key.
     func readBattery() async throws -> RingBattery {
+        try await Self.exclusive { try await self._readBattery() }
+    }
+
+    private func _readBattery() async throws -> RingBattery {
         guard let key = Self.storedAuthKey() else { throw RingBLEError.noAuthKey }
         try await waitForPowerOn()
         let ring = try await findRing()
@@ -274,6 +307,26 @@ final class RingBLEClient: NSObject {
         onProgress: @escaping (Int, UInt32) -> Void = { _, _ in },
         upload: (_ events: [RawRingEvent], _ nextCursor: UInt32) async throws -> Void
     ) async throws -> SyncOutcome {
+        try await Self.exclusive {
+            try await self._syncHistory(
+                from: cursor,
+                timeBudget: timeBudget,
+                chunkSize: chunkSize,
+                runSleepAnalysis: runSleepAnalysis,
+                onProgress: onProgress,
+                upload: upload
+            )
+        }
+    }
+
+    private func _syncHistory(
+        from cursor: UInt32,
+        timeBudget: TimeInterval,
+        chunkSize: Int,
+        runSleepAnalysis: Bool,
+        onProgress: @escaping (Int, UInt32) -> Void,
+        upload: (_ events: [RawRingEvent], _ nextCursor: UInt32) async throws -> Void
+    ) async throws -> SyncOutcome {
         guard let key = Self.storedAuthKey() else { throw RingBLEError.noAuthKey }
         try await waitForPowerOn()
         let ring = try await findRing()
@@ -372,6 +425,10 @@ final class RingBLEClient: NSObject {
     /// realtime data (open_oura captured ~50 Hz accelerometer), so readings
     /// likely arrive as unsolicited notifications instead.
     func listenRealtime(payload: [UInt8], seconds: TimeInterval = 45) async -> [String] {
+        await Self.exclusive { await self._listenRealtime(payload: payload, seconds: seconds) }
+    }
+
+    private func _listenRealtime(payload: [UInt8], seconds: TimeInterval) async -> [String] {
         var log = ["realtime flags: \(Data(payload).hexString)"]
         captureLog = []
         capturing = true
@@ -415,6 +472,10 @@ final class RingBLEClient: NSObject {
 
     /// Clears leftover ring modes and reports whether auth works afterwards.
     func resetAndVerify() async -> [String] {
+        await Self.exclusive { await self._resetAndVerify() }
+    }
+
+    private func _resetAndVerify() async -> [String] {
         var log: [String] = []
         do {
             try await waitForPowerOn()
@@ -440,6 +501,10 @@ final class RingBLEClient: NSObject {
 
     /// Minimal connect-and-ask used by the A/B comparison.
     func probe() async -> [String] {
+        await Self.exclusive { await self._probe() }
+    }
+
+    private func _probe() async -> [String] {
         var log: [String] = []
         captureLog = []
         capturing = true
@@ -471,6 +536,10 @@ final class RingBLEClient: NSObject {
     /// Connects and narrates every step, capturing raw notifications from all
     /// characteristics. For diagnosing why a command goes unanswered.
     func diagnose() async -> [String] {
+        await Self.exclusive { await self._diagnose() }
+    }
+
+    private func _diagnose() async -> [String] {
         var log: [String] = []
         captureLog = []
         capturing = true
@@ -555,6 +624,10 @@ final class RingBLEClient: NSObject {
     /// Reports each measurement feature's mode, so "no heart rate" can be
     /// distinguished from "feature switched off" without guessing.
     func featureReport() async throws -> [(name: String, on: Bool)] {
+        try await Self.exclusive { try await self._featureReport() }
+    }
+
+    private func _featureReport() async throws -> [(name: String, on: Bool)] {
         guard let key = Self.storedAuthKey() else { throw RingBLEError.noAuthKey }
         try await waitForPowerOn()
         let ring = try await findRing()

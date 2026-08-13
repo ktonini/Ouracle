@@ -133,3 +133,44 @@ extension RingHistoryTests {
         _ = RingBLEClient.timezoneHalfHoursByte(secondsFromGMT: Int.max / 2)
     }
 }
+
+@MainActor
+final class RingRadioAccessTests: XCTestCase {
+    /// The ring's auth handshake is a stateful challenge, so two overlapping
+    /// conversations leave one waiting for a nonce the other consumed —
+    /// which is what "Timed out during auth nonce" was. Operations must queue.
+    func testExclusiveAccessNeverOverlaps() async {
+        var active = 0
+        var maxActive = 0
+
+        await withTaskGroup(of: Void.self) { group in
+            for _ in 0 ..< 8 {
+                group.addTask { @MainActor in
+                    await RingBLEClient.exclusive {
+                        active += 1
+                        maxActive = max(maxActive, active)
+                        // Suspend inside the critical section: without a lock
+                        // this is exactly where the next caller would barge in.
+                        try? await Task.sleep(nanoseconds: 1_000_000)
+                        active -= 1
+                    }
+                }
+            }
+        }
+
+        XCTAssertEqual(maxActive, 1)
+        XCTAssertEqual(active, 0)
+    }
+
+    func testExclusiveAccessReleasesAfterAThrow() async {
+        struct Boom: Error {}
+        do {
+            try await RingBLEClient.exclusive { throw Boom() }
+            XCTFail("should have rethrown")
+        } catch {
+            // A failed operation must not wedge the radio for everyone else.
+        }
+        let ran = await RingBLEClient.exclusive { true }
+        XCTAssertTrue(ran)
+    }
+}
