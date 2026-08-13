@@ -81,6 +81,7 @@ def repair_packed(db: Session, apply: bool = False) -> Dict[str, Any]:
     """Unpack every mis-split row. Reports what it would do unless `apply`."""
     rows_hit = 0
     recovered: Dict[int, int] = {}
+    pending: Dict[str, Tuple[int, int, bytes]] = {}
     now = datetime.now(timezone.utc).replace(tzinfo=None)
 
     for row in db.query(RingEventRaw).order_by(RingEventRaw.timestamp).all():
@@ -102,22 +103,27 @@ def repair_packed(db: Session, apply: bool = False) -> Dict[str, Any]:
         row.body = own_body.hex()
         row.decoded = None
         for tag, timestamp, sub_body in events:
+            # Tag and timestamp are the identity, and one packed run can carry
+            # the same event twice; collect uniques rather than insert blind.
+            pending[f"{tag:02x}-{timestamp}"] = (tag, timestamp, sub_body)
+
+    if apply:
+        for key, (tag, timestamp, sub_body) in pending.items():
             db.merge(
                 RingEventRaw(
-                    id=f"{tag:02x}-{timestamp}",
+                    id=key,
                     tag=tag,
                     timestamp=timestamp,
                     body=sub_body.hex(),
                     received_at=now,
                 )
             )
-
-    if apply:
         db.commit()
 
     return {
         "rows_repaired": rows_hit,
         "events_recovered": sum(recovered.values()),
+        "unique_events": len(pending) if apply else None,
         "by_tag": dict(sorted(recovered.items())),
         "applied": apply,
     }

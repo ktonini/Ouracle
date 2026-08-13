@@ -107,3 +107,22 @@ def test_repair_is_idempotent(db_session):
     again = repair_packed(db_session, apply=True)
     assert again["rows_repaired"] == 0
     assert db_session.query(RingEventRaw).count() == 2
+
+
+def test_repeated_events_in_one_run_do_not_collide(db_session):
+    """Tag plus timestamp is the identity, and a packed run can carry the same
+    event twice — inserting blind raised a UNIQUE violation and lost the lot."""
+    body = (
+        bytes(range(14))
+        + frame(0x81, 1401, bytes(14))
+        + frame(0x81, 1401, bytes(14))  # same event again
+    )
+    db_session.add(
+        RingEventRaw(id="60-1400", tag=0x60, timestamp=1400, body=body.hex())
+    )
+    db_session.commit()
+
+    result = repair_packed(db_session, apply=True)
+    assert result["events_recovered"] == 2
+    assert result["unique_events"] == 1
+    assert db_session.query(RingEventRaw).count() == 2
