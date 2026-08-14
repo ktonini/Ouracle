@@ -146,7 +146,10 @@ def evaluate_heuristic(db: Session) -> Dict[str, Any]:
                 if r.get("sdnn_rmssd") is not None
             },
         )
-        predictions = {e["t"]: e["stage"] for e in stage_epochs(epochs)}
+        # Force the thresholds: this function exists to score them.
+        predictions = {
+            e["t"]: e["stage"] for e in stage_epochs(epochs, use_model=False)
+        }
         for row in rows:
             predicted = predictions.get(row["t"])
             if predicted is None:

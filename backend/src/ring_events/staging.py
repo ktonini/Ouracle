@@ -22,10 +22,18 @@ late) to agree and the minute-by-minute detail to differ, so stages carry a
 
 from __future__ import annotations
 
+import json
+import logging
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from statistics import mean, median, pstdev
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
+
+logger = logging.getLogger("RingStaging")
+
+# (mtime, forest) — reloaded when the file changes, so retraining takes effect
+# without a restart.
+_MODEL_CACHE: Tuple[Optional[float], Any] = (None, None)
 
 # Epochs shorter than this get too noisy for movement-based staging.
 EPOCH_MINUTES = 5
@@ -65,13 +73,88 @@ def _percentile(values: List[float], fraction: float) -> float:
     return ordered[index]
 
 
-def stage_epochs(epochs: List[Epoch]) -> List[Dict[str, Any]]:
+def load_model():
+    """The fitted forest, if one has been trained. Cached on the file's mtime.
+
+    Absent on a fresh install and on any server that has never had labels to
+    learn from, so staging must work without it.
+    """
+    global _MODEL_CACHE
+    from ..paths import get_user_data_dir
+
+    path = get_user_data_dir() / "sleep_model.json"
+    try:
+        stamp = path.stat().st_mtime
+    except OSError:
+        _MODEL_CACHE = (None, None)
+        return None
+    if _MODEL_CACHE[0] == stamp:
+        return _MODEL_CACHE[1]
+
+    try:
+        from .model import Forest
+
+        forest = Forest.from_json(json.loads(path.read_text()))
+    except Exception:  # a corrupt model must not take staging down
+        logger.exception("could not load %s; falling back to thresholds", path)
+        forest = None
+    _MODEL_CACHE = (stamp, forest)
+    return forest
+
+
+def _stage_with_model(epochs: List[Epoch], forest) -> List[Dict[str, Any]]:
+    """Stages from the learned model, with its own confidence."""
+    from .model import featurise_night
+
+    rows = [
+        {
+            "heart_rate": e.heart_rate,
+            "movement": e.movement,
+            "movement_peak": e.movement_peak,
+            "temperature": e.temperature,
+            "hrv": e.hr_variability,
+            "sdnn_rmssd": e.sdnn_rmssd,
+            "pnn50": e.pnn50,
+            "breath_irregularity": e.breath_irregularity,
+        }
+        for e in epochs
+    ]
+    staged: List[Dict[str, Any]] = []
+    for epoch, features in zip(epochs, featurise_night(rows)):
+        proba = forest.predict_proba(features)
+        best = max(range(len(proba)), key=lambda i: proba[i])
+        staged.append(
+            {
+                "t": epoch.start.isoformat(),
+                "stage": forest.stages[best],
+                # The forest's own vote share, so a marginal call reads as one.
+                "confidence": round(proba[best], 2),
+                "heart_rate": (
+                    round(epoch.heart_rate, 1) if epoch.heart_rate is not None else None
+                ),
+                "movement": round(epoch.movement or 0.0, 3),
+            }
+        )
+    return staged
+
+
+def stage_epochs(epochs: List[Epoch], use_model: bool = True) -> List[Dict[str, Any]]:
     """Classify epochs into sleep stages.
 
-    Thresholds are relative to the night itself rather than absolute, so this
-    adapts to the person and to sensor drift instead of assuming population
-    norms.
+    Uses the learned model when one has been fitted; the threshold rules below
+    are the fallback for a server with no labels to learn from. Measured
+    leave-one-night-out over six nights, the model scores 0.57 against 0.43 for
+    the thresholds — which are themselves below simply answering "light".
+
+    Those thresholds are relative to the night itself rather than absolute, so
+    they adapt to the person and to sensor drift instead of assuming
+    population norms.
     """
+    if use_model and epochs:
+        forest = load_model()
+        if forest is not None:
+            return _smooth(_stage_with_model(epochs, forest))
+
     movements = [e.movement for e in epochs if e.movement is not None]
     rates = [e.heart_rate for e in epochs if e.heart_rate is not None]
     variabilities = [e.hr_variability for e in epochs if e.hr_variability is not None]
@@ -241,7 +324,7 @@ def summarise(staged: List[Dict[str, Any]]) -> Dict[str, Any]:
         "awake_minutes": minutes[STAGE_AWAKE],
         "asleep_minutes": asleep,
         "efficiency_percent": round(asleep / total * 100) if total else None,
-        "method": "ouracle-local-v1",
+        "method": "ouracle-model-v1" if load_model() is not None else "ouracle-local-v1",
     }
 
 

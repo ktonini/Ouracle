@@ -25,7 +25,7 @@ def _epoch(index: int, movement: float, hr: float, hrv: float = 30.0) -> Epoch:
 def test_movement_marks_wake():
     epochs = [_epoch(i, 0.02, 60) for i in range(6)]
     epochs[3] = _epoch(3, 2.5, 75)  # a big movement burst
-    stages = [e["stage"] for e in stage_epochs(epochs)]
+    stages = [e["stage"] for e in stage_epochs(epochs, use_model=False)]
     assert stages[3] == "awake"
 
 
@@ -34,7 +34,7 @@ def test_low_hr_still_night_is_deep():
     epochs = [_epoch(i, 0.02, 70, 30) for i in range(10)]
     for i in range(3, 6):
         epochs[i] = _epoch(i, 0.01, 55, 20)
-    stages = [e["stage"] for e in stage_epochs(epochs)]
+    stages = [e["stage"] for e in stage_epochs(epochs, use_model=False)]
     assert stages[4] == "deep"
 
 
@@ -42,13 +42,13 @@ def test_elevated_variable_hr_without_movement_is_rem():
     epochs = [_epoch(i, 0.02, 60, 25) for i in range(10)]
     for i in range(6, 9):
         epochs[i] = _epoch(i, 0.02, 72, 65)  # higher and more variable
-    stages = [e["stage"] for e in stage_epochs(epochs)]
+    stages = [e["stage"] for e in stage_epochs(epochs, use_model=False)]
     assert "rem" in stages[6:9]
 
 
 def test_default_stage_is_light():
     epochs = [_epoch(i, 0.03, 64, 30) for i in range(6)]
-    assert set(e["stage"] for e in stage_epochs(epochs)) == {"light"}
+    assert set(e["stage"] for e in stage_epochs(epochs, use_model=False)) == {"light"}
 
 
 def test_single_epoch_flicker_is_smoothed():
@@ -112,13 +112,13 @@ def test_build_epochs_joins_series_on_timestamp():
 
 
 def test_no_heart_rate_yields_no_stages():
-    assert stage_epochs([]) == []
+    assert stage_epochs([], use_model=False) == []
 
 
 def test_flat_night_is_not_all_deep():
     """No heart-rate variation means no basis for staging beyond wake."""
     epochs = [_epoch(i, 0.02, 64, 30) for i in range(8)]
-    staged = stage_epochs(epochs)
+    staged = stage_epochs(epochs, use_model=False)
     assert set(e["stage"] for e in staged) == {"light"}
     assert all(e["confidence"] <= 0.3 for e in staged)  # flagged as low-confidence
 
@@ -146,7 +146,7 @@ def test_beat_interval_signature_marks_rem():
     for index in (0, 1):
         epochs[index].heart_rate = 56
 
-    staged = stage_epochs(epochs)
+    staged = stage_epochs(epochs, use_model=False)
     assert [staged[i]["stage"] for i in (6, 7)] == ["rem", "rem"]
 
 
@@ -170,7 +170,7 @@ def test_movement_rules_out_rem_signature():
             epochs[index].breath_irregularity = 0.6
             epochs[index].pnn50 = 0.05
             epochs[index].movement = movement
-        return [stage_epochs(epochs)[i]["stage"] for i in (6, 7)]
+        return [stage_epochs(epochs, use_model=False)[i]["stage"] for i in (6, 7)]
 
     assert night(0.01) == ["rem", "rem"]  # control: the signature does read as REM
     assert "rem" not in night(0.09)       # same signature, but the body is moving
@@ -199,4 +199,4 @@ def test_heart_rate_rule_defers_to_beat_intervals():
         epoch.sdnn_rmssd = 1.0
         epoch.pnn50 = 0.4
 
-    assert "rem" not in [e["stage"] for e in stage_epochs(epochs)]
+    assert "rem" not in [e["stage"] for e in stage_epochs(epochs, use_model=False)]
