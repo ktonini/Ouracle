@@ -164,9 +164,113 @@ def evaluate_heuristic(db: Session) -> Dict[str, Any]:
     }
 
 
+def _by_night(dataset: List[Dict[str, Any]]) -> Dict[str, List[Dict[str, Any]]]:
+    nights: Dict[str, List[Dict[str, Any]]] = {}
+    for row in dataset:
+        nights.setdefault(row["day"], []).append(row)
+    for rows in nights.values():
+        rows.sort(key=lambda r: r["t"])
+    return nights
+
+
+def _score(actual: List[str], predicted: List[str]) -> Dict[str, Any]:
+    confusion: Dict[str, Dict[str, int]] = {}
+    correct = 0
+    for want, got in zip(actual, predicted):
+        correct += want == got
+        confusion.setdefault(want, {}).setdefault(got, 0)
+        confusion[want][got] += 1
+    return {
+        "epochs": len(actual),
+        "accuracy": round(correct / len(actual), 3) if actual else None,
+        "confusion": confusion,
+        # Mean per-class recall. Plain accuracy rewards answering "light"
+        # everywhere, which is exactly the failure mode to avoid.
+        "balanced": round(
+            sum(
+                confusion.get(stage, {}).get(stage, 0) / max(sum(confusion.get(stage, {}).values()), 1)
+                for stage in set(actual)
+            )
+            / max(len(set(actual)), 1),
+            3,
+        ),
+    }
+
+
+def cross_validate(db: Session) -> Dict[str, Any]:
+    """Leave-one-night-out. Epochs within a night are heavily correlated, so a
+    random split would report a score the model could never reach in use."""
+    from .model import featurise_night, fit
+
+    nights = _by_night(build_dataset(db))
+    if len(nights) < 2:
+        return {"nights": len(nights)}
+
+    actual: List[str] = []
+    predicted: List[str] = []
+    majority: List[str] = []
+
+    for held_out in nights:
+        train_samples: List[Dict[str, Any]] = []
+        train_labels: List[str] = []
+        for day, rows in nights.items():
+            if day == held_out:
+                continue
+            for features, row in zip(featurise_night(rows), rows):
+                train_samples.append(features)
+                train_labels.append(row["label"])
+        if not train_samples:
+            continue
+
+        forest = fit(train_samples, train_labels)
+        most_common = max(set(train_labels), key=train_labels.count)
+
+        rows = nights[held_out]
+        for features, row in zip(featurise_night(rows), rows):
+            actual.append(row["label"])
+            predicted.append(forest.predict(features))
+            majority.append(most_common)
+
+    return {
+        "nights": len(nights),
+        "model": _score(actual, predicted),
+        "majority": _score(actual, majority),
+    }
+
+
+def train_model(db: Session) -> Dict[str, Any]:
+    """Fit on every paired night and write the model beside the database."""
+    import json
+
+    from ..paths import get_user_data_dir
+    from .model import featurise_night, fit
+
+    nights = _by_night(build_dataset(db))
+    samples: List[Dict[str, Any]] = []
+    labels: List[str] = []
+    for rows in nights.values():
+        for features, row in zip(featurise_night(rows), rows):
+            samples.append(features)
+            labels.append(row["label"])
+    if not samples:
+        return {"trained": False}
+
+    forest = fit(samples, labels)
+    path = get_user_data_dir() / "sleep_model.json"
+    path.write_text(json.dumps(forest.to_json()))
+    return {
+        "trained": True,
+        "path": str(path),
+        "epochs": len(samples),
+        "nights": len(nights),
+    }
+
+
 def main(argv: Optional[List[str]] = None) -> int:
     parser = argparse.ArgumentParser(description="Pair ring features with cloud labels.")
     parser.add_argument("--csv", help="Write the dataset to this path.")
+    parser.add_argument("--cv", action="store_true", help="Leave-one-night-out scoring.")
+    parser.add_argument("--train", action="store_true", help="Fit and save the model.")
     args = parser.parse_args(argv)
     logging.basicConfig(level=logging.INFO, format="%(levelname)s:%(name)s:%(message)s")
 
@@ -185,6 +289,24 @@ def main(argv: Optional[List[str]] = None) -> int:
                 writer.writeheader()
                 writer.writerows(dataset)
             logger.info("wrote %s", args.csv)
+
+        if args.cv:
+            scores = cross_validate(db)
+            logger.info("leave-one-night-out over %d nights", scores.get("nights", 0))
+            for name in ("majority", "model"):
+                block = scores.get(name)
+                if not block:
+                    continue
+                logger.info(
+                    "  %-9s accuracy %s  balanced %s",
+                    name, block["accuracy"], block["balanced"],
+                )
+                for actual, preds in sorted(block["confusion"].items()):
+                    detail = ", ".join(f"{s} {c}" for s, c in sorted(preds.items()))
+                    logger.info("      actual %-6s (%3d): %s",
+                                actual, sum(preds.values()), detail)
+        if args.train:
+            logger.info("trained: %s", train_model(db))
 
         result = evaluate_heuristic(db)
         logger.info(
