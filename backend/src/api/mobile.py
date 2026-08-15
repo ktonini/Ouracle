@@ -887,6 +887,8 @@ class RingCoverageSession(BaseModel):
     labels: int
     covered_fraction: float
     covered: bool
+    # Short naps are reported but don't count as failures.
+    counted: bool = True
 
 
 class RingCoverageGap(BaseModel):

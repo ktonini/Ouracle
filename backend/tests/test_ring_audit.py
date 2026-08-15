@@ -152,3 +152,37 @@ def test_rewind_is_none_when_nothing_is_missing(db_session):
     _cover(db_session, start, 7)
     report = coverage_report(db_session)
     assert resume_cursor_for_gaps(db_session, report) is None
+
+
+def test_short_naps_are_reported_but_not_counted_as_failures(db_session):
+    """Oura scores naps as sessions. They are not what the model trains on and
+    often have no ring coverage, so counting them would alert forever."""
+    _sync(db_session)
+    start = datetime(2026, 8, 9, 22, 0, tzinfo=timezone.utc)
+    _session(db_session, "2026-08-09", start, 7)
+    _cover(db_session, start, 7)
+    # A 25-minute nap with nothing behind it.
+    _session(db_session, "2026-08-10", datetime(2026, 8, 10, 14, 0, tzinfo=timezone.utc),
+             0.4, labels=5)
+
+    report = coverage_report(db_session)
+    assert report["status"] == "ok"
+    assert report["missing_sessions"] == []
+    nap = [s for s in report["sessions"] if s["day"] == "2026-08-10"][0]
+    assert nap["counted"] is False
+    assert nap["covered"] is False  # still visible, just not a failure
+    assert "1 scored nights" in report["message"] or "all 1" in report["message"]
+
+
+def test_rewind_skips_naps_and_targets_a_real_night(db_session):
+    """Rewinding to a nap would re-drain a week to recover 25 minutes."""
+    _sync(db_session)
+    _session(db_session, "2026-08-06", datetime(2026, 8, 6, 2, 0, tzinfo=timezone.utc),
+             0.4, labels=5)
+    real = datetime(2026, 8, 12, 22, 0, tzinfo=timezone.utc)
+    _session(db_session, "2026-08-12", real, 7)
+    _cover(db_session, datetime(2026, 8, 9, 22, 0, tzinfo=timezone.utc), 7)
+
+    report = coverage_report(db_session)
+    assert report["missing_sessions"] == ["2026-08-12"]
+    assert resume_cursor_for_gaps(db_session, report) == to_ring_ds(real, EPOCH)

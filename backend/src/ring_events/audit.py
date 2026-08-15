@@ -35,6 +35,11 @@ BUCKET_SECONDS = 300
 # The ring stops recording while charging, so short holes are ordinary. Only
 # report gaps long enough to swallow a night.
 GAP_HOURS = 6.0
+# Oura scores short naps as sessions too. They are not what the model trains
+# on and often have no ring coverage at all, so counting them as failures
+# would mean alerting every night about something not worth fixing. Reported,
+# but not counted. 30 five-minute epochs is 2.5 hours.
+MIN_LABELS_FOR_A_NIGHT = 30
 
 
 def _stamp(unix_seconds: float) -> str:
@@ -82,14 +87,16 @@ def coverage_report(db: Session) -> Dict[str, Any]:
         total = max(last - first, 1)
         held = sum(1 for bucket in range(first, last) if bucket in occupied)
         fraction = round(held / total, 3)
+        labels = len(session.sleep_phase_5_min)
         sessions.append(
             {
                 "day": str(session.day),
                 "start": start.isoformat(),
                 "end": end.isoformat(),
-                "labels": len(session.sleep_phase_5_min),
+                "labels": labels,
                 "covered_fraction": fraction,
                 "covered": fraction >= MIN_COVERED_FRACTION,
+                "counted": labels >= MIN_LABELS_FOR_A_NIGHT,
             }
         )
 
@@ -106,13 +113,14 @@ def coverage_report(db: Session) -> Dict[str, Any]:
             )
     gaps.sort(key=lambda g: -g["hours"])
 
-    missing = [s for s in sessions if not s["covered"]]
+    counted = [s for s in sessions if s["counted"]]
+    missing = [s for s in counted if not s["covered"]]
     return {
         "status": "gaps" if missing else "ok",
         "message": (
-            f"{len(missing)} of {len(sessions)} scored nights have no ring data"
+            f"{len(missing)} of {len(counted)} scored nights have no ring data"
             if missing
-            else f"all {len(sessions)} scored nights are covered"
+            else f"all {len(counted)} scored nights are covered"
         ),
         "from": _stamp(to_unix(stamps[0], offset)),
         "to": _stamp(to_unix(stamps[-1], offset)),
@@ -136,7 +144,7 @@ def resume_cursor_for_gaps(db: Session, report: Dict[str, Any]) -> Optional[int]
     earliest = min(
         datetime.fromisoformat(s["start"])
         for s in report["sessions"]
-        if not s["covered"]
+        if s.get("counted") and not s["covered"]
     )
     return to_ring_ds(earliest, offset)
 
@@ -163,11 +171,15 @@ def main(argv: Optional[List[str]] = None) -> int:
                 "  %d events, %s → %s", report["events"], report["from"], report["to"]
             )
         for session in report.get("sessions", []):
+            if not session["counted"]:
+                mark = "nap"
+            elif session["covered"]:
+                mark = "ok"
+            else:
+                mark = "MISS"
             logger.info(
                 "  %s %-5s %3d labels  coverage %5.1f%%",
-                session["day"],
-                "ok" if session["covered"] else "MISS",
-                session["labels"],
+                session["day"], mark, session["labels"],
                 session["covered_fraction"] * 100,
             )
         for gap in report.get("gaps", []):
