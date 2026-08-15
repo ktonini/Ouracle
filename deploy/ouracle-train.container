@@ -1,0 +1,43 @@
+# One-shot nightly retrain of the sleep-staging model.
+#
+# Each night the cloud scores adds ~90 more labelled epochs, so the model
+# should improve on its own. Refuses to install a model that fails to beat the
+# trivial baseline or that regresses against the one already running, and does
+# nothing at all when no new night has appeared.
+#
+# Install like ouracle-sync (see deploy/README.md):
+#   cp deploy/ouracle-train.container ~/.config/containers/systemd/
+#   cp deploy/ouracle-train.timer     ~/.config/systemd/user/
+#   systemctl --user daemon-reload
+#   systemctl --user enable --now ouracle-train.timer
+#
+# Manual run:
+#   systemctl --user start ouracle-train.service
+# Logs:
+#   journalctl --user -u ouracle-train.service
+
+[Unit]
+Description=Ouracle sleep-staging retrain (one-shot)
+# Runs after the morning sync, so it learns from a night the cloud has just
+# scored rather than waiting a further day for it.
+Wants=network-online.target
+After=network-online.target ouracle-sync.service
+
+[Container]
+Image=localhost/ouracle:latest
+ContainerName=ouracle-train
+EnvironmentFile=%h/pods/ouracle/env
+Volume=%h/pods/ouracle/data:/data:z
+UserNS=keep-id:uid=1001,gid=0
+Exec=python -m backend.src.ring_events.retrain
+NoNewPrivileges=true
+# Writes sleep_model.json into the data volume.
+ReadOnly=true
+ReadOnlyTmpfs=true
+
+[Service]
+Type=oneshot
+# Leave-one-night-out over every paired night; grows with the data.
+TimeoutStartSec=1800
+# Exit 1 = trained model rejected on quality grounds (already alerted).
+SuccessExitStatus=0

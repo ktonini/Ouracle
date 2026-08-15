@@ -200,12 +200,14 @@ def _score(actual: List[str], predicted: List[str]) -> Dict[str, Any]:
     }
 
 
-def cross_validate(db: Session) -> Dict[str, Any]:
+def cross_validate(
+    db: Session, dataset: Optional[List[Dict[str, Any]]] = None
+) -> Dict[str, Any]:
     """Leave-one-night-out. Epochs within a night are heavily correlated, so a
     random split would report a score the model could never reach in use."""
     from .model import featurise_night, fit
 
-    nights = _by_night(build_dataset(db))
+    nights = _by_night(build_dataset(db) if dataset is None else dataset)
     if len(nights) < 2:
         return {"nights": len(nights)}
 
@@ -241,31 +243,82 @@ def cross_validate(db: Session) -> Dict[str, Any]:
     }
 
 
-def train_model(db: Session) -> Dict[str, Any]:
-    """Fit on every paired night and write the model beside the database."""
+def train_model(
+    db: Session,
+    dataset: Optional[List[Dict[str, Any]]] = None,
+    guard: bool = True,
+) -> Dict[str, Any]:
+    """Fit on every paired night and write the model beside the database.
+
+    Guarded: a model that cannot beat answering "light" for every epoch is not
+    worth shipping, and neither is one materially worse than what is already
+    installed. Retraining runs unattended, so it must not be able to quietly
+    replace a good model with a bad one.
+    """
     import json
+    from datetime import datetime, timezone
 
     from ..paths import get_user_data_dir
     from .model import featurise_night, fit
 
-    nights = _by_night(build_dataset(db))
+    rows = build_dataset(db) if dataset is None else dataset
+    nights = _by_night(rows)
     samples: List[Dict[str, Any]] = []
     labels: List[str] = []
-    for rows in nights.values():
-        for features, row in zip(featurise_night(rows), rows):
+    for night_rows in nights.values():
+        for features, row in zip(featurise_night(night_rows), night_rows):
             samples.append(features)
             labels.append(row["label"])
     if not samples:
-        return {"trained": False}
+        return {"trained": False, "reason": "no paired epochs"}
+
+    scores = cross_validate(db, dataset=rows)
+    fresh = (scores.get("model") or {}).get("balanced")
+    baseline = (scores.get("majority") or {}).get("balanced")
+    path = get_user_data_dir() / "sleep_model.json"
+
+    previous: Optional[Dict[str, Any]] = None
+    if path.exists():
+        try:
+            previous = json.loads(path.read_text()).get("meta")
+        except Exception:
+            previous = None
+
+    if guard and fresh is not None and baseline is not None:
+        if fresh <= baseline:
+            return {
+                "trained": False,
+                "reason": f"balanced {fresh} does not beat baseline {baseline}",
+                "scores": scores,
+            }
+        was = (previous or {}).get("balanced")
+        # A little movement between fits is normal; a real drop is not.
+        if was is not None and fresh < was - 0.05:
+            return {
+                "trained": False,
+                "reason": f"balanced {fresh} is worse than the installed {was}",
+                "scores": scores,
+            }
 
     forest = fit(samples, labels)
-    path = get_user_data_dir() / "sleep_model.json"
-    path.write_text(json.dumps(forest.to_json()))
+    blob = forest.to_json()
+    blob["meta"] = {
+        "trained_at": datetime.now(timezone.utc).isoformat(),
+        "nights": sorted(nights),
+        "epochs": len(samples),
+        "balanced": fresh,
+        "accuracy": (scores.get("model") or {}).get("accuracy"),
+        "baseline_balanced": baseline,
+    }
+    path.write_text(json.dumps(blob))
     return {
         "trained": True,
         "path": str(path),
         "epochs": len(samples),
         "nights": len(nights),
+        "balanced": fresh,
+        "baseline": baseline,
+        "previous_balanced": (previous or {}).get("balanced"),
     }
 
 

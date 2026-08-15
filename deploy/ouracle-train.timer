@@ -1,0 +1,20 @@
+# Nightly trigger for ouracle-train.service.
+#
+#   cp deploy/ouracle-train.timer ~/.config/systemd/user/
+#   systemctl --user daemon-reload
+#   systemctl --user enable --now ouracle-train.timer
+#   systemctl --user list-timers ouracle-train.timer
+
+[Unit]
+Description=Nightly Ouracle sleep-staging retrain
+
+[Timer]
+# After the 10:30 sync has pulled last night's scored sleep, so the new night
+# is available to learn from the same morning.
+OnCalendar=*-*-* 11:30:00
+RandomizedDelaySec=20m
+# Catch up if the machine was off at trigger time.
+Persistent=true
+
+[Install]
+WantedBy=timers.target
