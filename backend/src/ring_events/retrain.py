@@ -76,6 +76,21 @@ def main(argv: Optional[List[str]] = None) -> int:
     init_db()
     db = SessionLocal()
     try:
+        # Check the feed before the model: a night missing from the ring is the
+        # difference between the model improving and it standing still, and the
+        # drain cannot be trusted to notice on its own.
+        from .audit import coverage_report
+
+        coverage = coverage_report(db)
+        logger.info("coverage %s: %s", coverage["status"], coverage["message"])
+        if coverage["status"] == "gaps":
+            try:
+                from ..notify import notify
+
+                notify(db, "Ouracle: ring data missing", coverage["message"])
+            except Exception:
+                logger.exception("could not send the coverage alert")
+
         result = retrain(db, force=args.force)
         if result.get("trained"):
             logger.info(

@@ -880,6 +880,57 @@ def ring_sync_state(
     )
 
 
+class RingCoverageSession(BaseModel):
+    day: str
+    start: datetime
+    end: datetime
+    labels: int
+    covered_fraction: float
+    covered: bool
+
+
+class RingCoverageGap(BaseModel):
+    from_: datetime = Field(alias="from")
+    to: datetime
+    hours: float
+
+    model_config = {"populate_by_name": True}
+
+
+class RingCoverageReport(BaseModel):
+    """What we hold against what Oura says exists.
+
+    The drain can report itself caught up while days are missing — the ring
+    answers honestly about a cursor position the phone already skipped past.
+    This is the check that contradicts it.
+    """
+
+    status: str
+    message: str
+    events: int = 0
+    from_: Optional[datetime] = Field(default=None, alias="from")
+    to: Optional[datetime] = None
+    sessions: List[RingCoverageSession] = Field(default_factory=list)
+    missing_sessions: List[str] = Field(default_factory=list)
+    gaps: List[RingCoverageGap] = Field(default_factory=list)
+    largest_gap_hours: float = 0.0
+
+    model_config = {"populate_by_name": True}
+
+
+@mobile_client_router.get(
+    "/api/mobile/ring-coverage", response_model=RingCoverageReport
+)
+def ring_coverage(
+    _: Dict[str, Any] = Depends(_require_mobile_token),
+    db: Session = Depends(get_db),
+):
+    """Whether every night Oura scored actually has ring data behind it."""
+    from ..ring_events.audit import coverage_report
+
+    return coverage_report(db)
+
+
 @mobile_client_router.post("/api/mobile/ring-events", response_model=RingSyncState)
 def upload_ring_events(
     batch: RingEventBatch,
