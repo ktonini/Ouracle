@@ -860,7 +860,9 @@ class RingSyncState(BaseModel):
     rewound_for: Optional[str] = None
 
 
-def _rewind_target(db: Session, cursor: int, backlog: Optional[int]) -> Optional[tuple]:
+def _rewind_target(
+    db: Session, cursor: int, backlog: Optional[int], last_attempt: Optional[datetime]
+) -> Optional[tuple]:
     """An earlier cursor when a scored night has no ring data behind it.
 
     The drain's own bookmark cannot detect this: it advanced past the gap, so
@@ -902,13 +904,20 @@ def _rewind_target(db: Session, cursor: int, backlog: Optional[int]) -> Optional
         day = session["day"]
         seen = history.get(day) or {}
         tried = int(seen.get("attempts", 0))
-        # Only a rewind that recovers nothing counts against the budget. While
-        # coverage keeps improving the drain is working and should carry on,
-        # however many passes a long night takes.
+        marker = last_attempt.isoformat() if last_attempt else ""
         if session["covered_fraction"] > seen.get("fraction", -1.0):
+            # Coverage improved: the rewind is working, so let it carry on
+            # however many passes a long night takes.
             tried = 0
+        elif seen.get("since") == marker:
+            # The app reads this endpoint more than once per sync. Re-issue the
+            # same rewind without charging for it until a drain has actually
+            # run — otherwise a couple of screen opens exhaust the budget.
+            pass
         elif tried >= MAX_REWIND_ATTEMPTS:
             continue
+        else:
+            tried += 1
 
         target = to_ring_ds(datetime.fromisoformat(session["start"]), offset)
         target = max(target - REWIND_MARGIN_DECISECONDS, 0)
@@ -917,8 +926,9 @@ def _rewind_target(db: Session, cursor: int, backlog: Optional[int]) -> Optional
             continue
 
         history[day] = {
-            "attempts": tried + 1,
+            "attempts": max(tried, 1),
             "fraction": session["covered_fraction"],
+            "since": marker,
         }
         _record_state(db, RING_REWIND_KEY, json.dumps(history))
         db.commit()
@@ -953,7 +963,9 @@ def _sync_state(db: Session, allow_rewind: bool = False) -> "RingSyncState":
     cursor = int(row.value) if row and row.value else 0
     rewound_for = None
     if allow_rewind:
-        rewind = _rewind_target(db, cursor, left)
+        rewind = _rewind_target(
+            db, cursor, left, attempt.updated_at if attempt else None
+        )
         if rewind is not None:
             cursor, rewound_for = rewind
             logger.info("rewinding ring cursor to %d for %s", cursor, rewound_for)

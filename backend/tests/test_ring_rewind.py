@@ -124,13 +124,26 @@ def test_most_recent_missing_night_goes_first(client):
     assert _state(client)["rewound_for"] == "2026-08-12"
 
 
+def _failed_sync(client):
+    """A sync that reached the ring and came back with nothing."""
+    client.post(
+        "/api/mobile/ring-events",
+        json={"events": [], "status": "auto: nothing new", "bytes_left": 0},
+        headers=HEADERS,
+    )
+
+
 def test_a_night_the_ring_no_longer_holds_is_eventually_abandoned(client):
-    """Otherwise the drain re-reads the same span forever and never moves on."""
+    """Otherwise the drain re-reads the same span forever chasing data that
+    aged out of the ring's buffer."""
     missing = datetime(2026, 8, 12, 22, 0, tzinfo=timezone.utc)
     _setup(client.session, to_ring_ds(missing + timedelta(days=1), EPOCH))
     _session(client.session, "2026-08-12", missing)
 
-    seen = [_state(client)["rewound_for"] for _ in range(5)]
+    seen = []
+    for _ in range(5):
+        seen.append(_state(client)["rewound_for"])
+        _failed_sync(client)
     assert seen[:3] == ["2026-08-12"] * 3
     assert seen[3:] == [None, None]
 
@@ -141,13 +154,14 @@ def test_progress_keeps_the_rewind_alive(client):
     _setup(client.session, to_ring_ds(missing + timedelta(days=1), EPOCH))
     _session(client.session, "2026-08-12", missing)
 
-    assert _state(client)["rewound_for"] == "2026-08-12"
-    assert _state(client)["rewound_for"] == "2026-08-12"
+    for _ in range(2):
+        assert _state(client)["rewound_for"] == "2026-08-12"
+        _failed_sync(client)
     # A pass lands part of the night: coverage improved, so the budget resets.
     _cover(client.session, missing, 3)
-    assert _state(client)["rewound_for"] == "2026-08-12"
-    assert _state(client)["rewound_for"] == "2026-08-12"
-    assert _state(client)["rewound_for"] == "2026-08-12"
+    for _ in range(3):
+        assert _state(client)["rewound_for"] == "2026-08-12"
+        _failed_sync(client)
 
 
 def test_uploading_does_not_rewind_or_spend_attempts(client):
@@ -166,3 +180,24 @@ def test_uploading_does_not_rewind_or_spend_attempts(client):
     assert posted["rewound_for"] is None
     assert posted["cursor"] == ahead
     assert client.session.get(IngestState, "ring_events:rewind") is None
+
+
+def test_reading_state_repeatedly_does_not_spend_the_budget(client):
+    """The app reads this endpoint more than once per sync. Only a drain that
+    actually ran and recovered nothing should count against the budget."""
+    missing = datetime(2026, 8, 12, 22, 0, tzinfo=timezone.utc)
+    _setup(client.session, to_ring_ds(missing + timedelta(days=1), EPOCH))
+    _session(client.session, "2026-08-12", missing)
+
+    # Ten reads with no sync in between still offer the same rewind.
+    assert all(_state(client)["rewound_for"] == "2026-08-12" for _ in range(10))
+
+    # Each real sync attempt that recovers nothing costs one.
+    for _ in range(3):
+        client.post(
+            "/api/mobile/ring-events",
+            json={"events": [], "status": "auto failed: out of range"},
+            headers=HEADERS,
+        )
+        _state(client)
+    assert _state(client)["rewound_for"] is None
