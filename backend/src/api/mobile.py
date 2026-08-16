@@ -820,6 +820,12 @@ RING_CURSOR_KEY = "ring_events:cursor"
 RING_ATTEMPT_KEY = "ring_events:last_attempt"
 RING_ADDED_KEY = "ring_events:last_added"
 RING_BACKLOG_KEY = "ring_events:bytes_left"
+RING_REWIND_KEY = "ring_events:rewind"
+# A night the ring no longer holds can never be recovered, so rewinding for it
+# forever would re-read the same span on every sync and never move on.
+MAX_REWIND_ATTEMPTS = 3
+# Start a little before the session, so its opening minutes aren't clipped.
+REWIND_MARGIN_DECISECONDS = 30 * 60 * 10
 
 
 class RingEventUpload(BaseModel):
@@ -849,6 +855,75 @@ class RingSyncState(BaseModel):
     last_added: Optional[int] = None
     bytes_left: Optional[int] = None
     caught_up: Optional[bool] = None
+    # Set when the cursor above is a deliberate rewind rather than the stored
+    # bookmark: a night Oura scored that we hold no ring data for.
+    rewound_for: Optional[str] = None
+
+
+def _rewind_target(db: Session, cursor: int, backlog: Optional[int]) -> Optional[tuple]:
+    """An earlier cursor when a scored night has no ring data behind it.
+
+    The drain's own bookmark cannot detect this: it advanced past the gap, so
+    the ring truthfully answers that nothing is left. Only the cloud's own
+    hypnograms reveal that a night is missing, which makes this the server's
+    job rather than the phone's.
+
+    Most recent missing night first — it is the cheapest to re-read and the
+    likeliest to still be in the ring's buffer. Older ones get their turn on
+    later syncs once it is covered.
+    """
+    # Mid-backlog: let the drain finish rather than sending it round again.
+    if backlog is None or backlog > 0:
+        return None
+
+    from ..models import IngestState
+    from ..ring_events.audit import coverage_report
+    from ..ring_events.night import ring_clock_offset, to_ring_ds
+
+    report = coverage_report(db)
+    if report.get("status") != "gaps":
+        return None
+    offset = ring_clock_offset(db)
+    if offset is None:
+        return None
+
+    row = db.get(IngestState, RING_REWIND_KEY)
+    history: Dict[str, Dict[str, float]] = {}
+    if row and row.value:
+        try:
+            history = json.loads(row.value)
+        except ValueError:
+            history = {}
+
+    candidates = [
+        s for s in report["sessions"] if s.get("counted") and not s["covered"]
+    ]
+    for session in sorted(candidates, key=lambda s: s["start"], reverse=True):
+        day = session["day"]
+        seen = history.get(day) or {}
+        tried = int(seen.get("attempts", 0))
+        # Only a rewind that recovers nothing counts against the budget. While
+        # coverage keeps improving the drain is working and should carry on,
+        # however many passes a long night takes.
+        if session["covered_fraction"] > seen.get("fraction", -1.0):
+            tried = 0
+        elif tried >= MAX_REWIND_ATTEMPTS:
+            continue
+
+        target = to_ring_ds(datetime.fromisoformat(session["start"]), offset)
+        target = max(target - REWIND_MARGIN_DECISECONDS, 0)
+        # A night ahead of the cursor needs no rewind; the drain will reach it.
+        if target >= cursor:
+            continue
+
+        history[day] = {
+            "attempts": tried + 1,
+            "fraction": session["covered_fraction"],
+        }
+        _record_state(db, RING_REWIND_KEY, json.dumps(history))
+        db.commit()
+        return target, day
+    return None
 
 
 @mobile_client_router.get("/api/mobile/ring-events/state", response_model=RingSyncState)
@@ -856,7 +931,16 @@ def ring_sync_state(
     _: Dict[str, Any] = Depends(_require_mobile_token),
     db: Session = Depends(get_db),
 ):
-    """Where to resume the ring's history drain."""
+    """Where to resume the ring's history drain.
+
+    Rewinds when a night Oura scored has no ring events behind it — the drain
+    reports itself caught up in exactly that situation, because it is asking
+    the ring about a position it already skipped past.
+    """
+    return _sync_state(db, allow_rewind=True)
+
+
+def _sync_state(db: Session, allow_rewind: bool = False) -> "RingSyncState":
     from ..models import IngestState, RingEventRaw
 
     row = db.get(IngestState, RING_CURSOR_KEY)
@@ -865,8 +949,17 @@ def ring_sync_state(
     added = db.get(IngestState, RING_ADDED_KEY)
     backlog = db.get(IngestState, RING_BACKLOG_KEY)
     left = int(backlog.value) if backlog and backlog.value else None
+
+    cursor = int(row.value) if row and row.value else 0
+    rewound_for = None
+    if allow_rewind:
+        rewind = _rewind_target(db, cursor, left)
+        if rewind is not None:
+            cursor, rewound_for = rewind
+            logger.info("rewinding ring cursor to %d for %s", cursor, rewound_for)
+
     return RingSyncState(
-        cursor=int(row.value) if row and row.value else 0,
+        cursor=cursor,
         stored_events=db.query(RingEventRaw).count(),
         decoded_events=db.query(RingEventRaw)
         .filter(RingEventRaw.decoded.isnot(None))
@@ -877,6 +970,7 @@ def ring_sync_state(
         last_added=int(added.value) if added and added.value else None,
         bytes_left=left,
         caught_up=(left == 0) if left is not None else None,
+        rewound_for=rewound_for,
     )
 
 
@@ -986,7 +1080,7 @@ def upload_ring_events(
         _record_state(db, RING_BACKLOG_KEY, str(batch.bytes_left))
 
     db.commit()
-    return ring_sync_state(_, db)
+    return _sync_state(db)
 
 
 def _record_state(db: Session, key: str, value: str) -> None:
