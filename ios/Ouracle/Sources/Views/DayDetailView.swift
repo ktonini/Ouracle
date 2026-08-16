@@ -126,6 +126,20 @@ struct DayDetailView: View {
                         .foregroundStyle(.secondary)
                 }
 
+                if !night.spo2Series.isEmpty {
+                    ringChart(night.spo2Series, title: "Blood oxygen", unit: "%", color: .teal)
+                    HStack {
+                        stat("Lowest", night.lowestSpo2.map { String(format: "%.1f%%", $0) })
+                        stat("Dips/hour", night.desaturationIndex.map {
+                            String(format: "%.1f", $0)
+                        })
+                        Spacer()
+                    }
+                    Text("A dip is a fall of 3% or more below where saturation had been sitting — the index counts them per hour. Everyday numbers vary a lot between people and between nights; this is one finger sensor's view, not a medical assessment.")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                }
+
                 ringChart(night.heartRate, title: "Heart rate", unit: "bpm", color: .red)
                 if !night.movement.isEmpty {
                     ringChart(night.movement, title: "Movement", unit: "mad", color: .purple)

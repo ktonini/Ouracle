@@ -194,3 +194,35 @@ extension SyncModelsTests {
         XCTAssertNil(night.lowestHr)
     }
 }
+
+extension SyncModelsTests {
+    func testDecodesSaturationCurveAndDesaturations() throws {
+        let json = """
+        {"start":"2026-08-14T14:00:00+00:00","end":"2026-08-14T18:41:00+00:00",
+         "heart_rate":[],"movement":[],"temperature":[],"beats":1,
+         "spo2_percent":95.5,"desaturation_index":1.6,"lowest_spo2":92.7,
+         "spo2_series":[{"t":"2026-08-14T14:00:00+00:00","value":95.8},
+                        {"t":"2026-08-14T14:05:00+00:00","value":95.1}],
+         "event_count":1,"detected_bedtimes":[],"stages":[]}
+        """
+        let night = try JSONDecoder().decode(RingNight.self, from: Data(json.utf8))
+        XCTAssertEqual(night.spo2Series.count, 2)
+        XCTAssertEqual(night.spo2Series.first?.value ?? 0, 95.8, accuracy: 0.001)
+        XCTAssertEqual(night.desaturationIndex ?? 0, 1.6, accuracy: 0.001)
+        XCTAssertEqual(night.lowestSpo2 ?? 0, 92.7, accuracy: 0.001)
+    }
+
+    /// Nights the ring never ran the oximeter on must decode with the curve
+    /// simply absent, not fail.
+    func testANightWithoutSaturationDecodes() throws {
+        let json = """
+        {"start":"2026-08-15T15:23:00+00:00","end":"2026-08-15T22:17:00+00:00",
+         "heart_rate":[],"movement":[],"temperature":[],"beats":1,
+         "event_count":1,"detected_bedtimes":[],"stages":[]}
+        """
+        let night = try JSONDecoder().decode(RingNight.self, from: Data(json.utf8))
+        XCTAssertTrue(night.spo2Series.isEmpty)
+        XCTAssertNil(night.desaturationIndex)
+        XCTAssertNil(night.lowestSpo2)
+    }
+}

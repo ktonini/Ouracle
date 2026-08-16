@@ -329,6 +329,15 @@ struct RingNight: Codable, Equatable {
     /// Blood oxygen, from the ring's ratio-of-ratios through a calibration
     /// fitted to this ring against Oura's own figures.
     let spo2Percent: Double?
+    /// Saturation through the night, and drops of 3% or more below the recent
+    /// baseline. An observation from a finger sensor, not a diagnosis.
+    ///
+    /// Optional on the wire: nights the ring never ran the oximeter on omit it
+    /// entirely, and that is ordinary rather than an error.
+    private let spo2SeriesRaw: [Point]?
+    var spo2Series: [Point] { spo2SeriesRaw ?? [] }
+    let desaturationIndex: Double?
+    let lowestSpo2: Double?
     struct Stage: Codable, Equatable, Identifiable {
         let t: String
         let stage: String
@@ -369,6 +378,9 @@ struct RingNight: Codable, Equatable {
         case averageHr = "average_hr"
         case breathRate = "breath_rate"
         case spo2Percent = "spo2_percent"
+        case spo2SeriesRaw = "spo2_series"
+        case desaturationIndex = "desaturation_index"
+        case lowestSpo2 = "lowest_spo2"
         case eventCount = "event_count"
         case detectedBedtimes = "detected_bedtimes"
         case stages
