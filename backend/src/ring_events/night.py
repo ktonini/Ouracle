@@ -118,32 +118,38 @@ def _ibi_features(intervals: List[int]) -> Optional[Dict[str, float]]:
         "sdnn_rmssd": round(sdnn / rmssd, 2) if rmssd else 0.0,
         "pnn50": round(pnn50, 3),
         "breath_irregularity": _breath_irregularity(beats),
+        "breath_rate": _breath_rate(beats),
     }
 
 
-def _breath_irregularity(beats: List[int]) -> float:
-    """How irregular breathing is, from respiratory sinus arrhythmia.
+def _respiratory_peaks(beats: List[int]) -> List[int]:
+    """Indices in `beats` where the detrended interval series peaks.
 
-    Breathing modulates beat intervals, so peaks in the detrended IBI series
-    mark breath cycles. Their spacing is near-constant in NREM and erratic in
-    REM; this returns the coefficient of variation of that spacing.
+    Breathing modulates beat spacing — respiratory sinus arrhythmia — so each
+    peak in the detrended series marks one breath. Detrending against a short
+    moving average isolates that wave from slower drift in heart rate.
     """
     if len(beats) < 30:
-        return 0.0
-    # Detrend against a short moving average to isolate the respiratory wave.
+        return []
     window = 5
     detrended = []
     for index in range(len(beats) - window):
         local = beats[index : index + window]
         detrended.append(beats[index] - sum(local) / window)
 
-    peaks = [
+    return [
         index
         for index in range(1, len(detrended) - 1)
         if detrended[index] > detrended[index - 1]
         and detrended[index] >= detrended[index + 1]
         and detrended[index] > 0
     ]
+
+
+def _breath_irregularity(beats: List[int]) -> float:
+    """How irregular breathing is: the coefficient of variation of the spacing
+    between breaths, which is near-constant in NREM and erratic in REM."""
+    peaks = _respiratory_peaks(beats)
     if len(peaks) < 4:
         return 0.0
     spacing = [b - a for a, b in zip(peaks, peaks[1:])]
@@ -154,6 +160,28 @@ def _breath_irregularity(beats: List[int]) -> float:
         sum((s - mean_spacing) ** 2 for s in spacing) / len(spacing)
     ) ** 0.5
     return round(deviation / mean_spacing, 3)
+
+
+def _breath_rate(beats: List[int]) -> Optional[float]:
+    """Breaths per minute from the same respiratory wave.
+
+    A cycle's length is the sum of the beat intervals it spans, not a count of
+    beats — heart rate varies, so beats are not a clock. The median across
+    cycles resists a missed peak, which would otherwise merge two breaths into
+    one and halve the rate.
+    """
+    peaks = _respiratory_peaks(beats)
+    if len(peaks) < 3:
+        return None
+    durations = [sum(beats[a:b]) for a, b in zip(peaks, peaks[1:])]
+    durations = [d for d in durations if d > 0]
+    if not durations:
+        return None
+    cycle_ms = median(durations)
+    rate = 60_000 / cycle_ms
+    # Outside this, peak detection has latched onto something that is not
+    # breathing; reporting it would be worse than reporting nothing.
+    return round(rate, 1) if 4.0 <= rate <= 40.0 else None
 
 
 def _features_per_bucket(

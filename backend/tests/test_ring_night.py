@@ -217,3 +217,72 @@ def test_night_exposes_per_bucket_ibi_features(db_session):
     features = next(iter(night["ibi_features"].values()))
     assert features["rmssd"] > 0
     assert "breath_irregularity" in features
+
+
+def test_breath_rate_recovers_a_known_breathing_frequency():
+    """A synthetic respiratory wave at a known rate must read back as that
+    rate — beats are not a clock, so the cycle length has to come from the
+    intervals themselves."""
+    import math
+
+    from backend.src.ring_events.night import _breath_rate
+
+    # 60 bpm heart rate (1000 ms intervals) modulated at 12 breaths/min:
+    # one breath every 5 seconds, so every 5 beats.
+    beats = [round(1000 + 40 * math.sin(i * 2 * math.pi / 5)) for i in range(300)]
+    rate = _breath_rate(beats)
+    assert rate is not None
+    assert 11.0 <= rate <= 13.0, rate
+
+
+def test_breath_rate_tracks_a_faster_rhythm():
+    import math
+
+    from backend.src.ring_events.night import _breath_rate
+
+    # One breath every 3 beats at 1000 ms => 20 breaths/min.
+    beats = [round(1000 + 40 * math.sin(i * 2 * math.pi / 3)) for i in range(300)]
+    rate = _breath_rate(beats)
+    assert rate is not None
+    assert 18.0 <= rate <= 22.0, rate
+
+
+def test_breath_rate_is_none_without_a_usable_wave():
+    from backend.src.ring_events.night import _breath_rate
+
+    assert _breath_rate([1000] * 200) is None   # flat: no peaks
+    assert _breath_rate([1000] * 10) is None    # too few beats
+
+
+def test_breath_rate_rejects_an_implausible_reading():
+    """Peak detection latching onto something that isn't breathing must report
+    nothing rather than a number."""
+    import math
+
+    from backend.src.ring_events.night import _breath_rate
+
+    # A peak every other beat at 1000 ms would be 30/min — still plausible —
+    # but at 300 ms intervals it implies 100 breaths a minute.
+    beats = [round(300 + 20 * math.sin(i * math.pi)) for i in range(200)]
+    assert _breath_rate(beats) is None
+
+
+def test_night_features_include_breath_rate(db_session):
+    _sync(db_session, 0)
+    import math
+
+    start = datetime(2026, 8, 5, 6, 0, tzinfo=timezone.utc)
+    beats = [round(1000 + 40 * math.sin(i * 2 * math.pi / 5)) for i in range(120)]
+    db_session.add(
+        RingEventRaw(
+            id="60-br", tag=0x60, timestamp=to_ring_ds(start, EPOCH) + 60, body="",
+            decoded={"ibi_ms": beats},
+        )
+    )
+    db_session.commit()
+    night = build_night(
+        db_session, start, datetime(2026, 8, 5, 7, tzinfo=timezone.utc)
+    )
+    features = next(iter(night["ibi_features"].values()))
+    assert features["breath_rate"] is not None
+    assert 10 <= features["breath_rate"] <= 14
