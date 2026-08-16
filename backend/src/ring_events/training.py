@@ -178,14 +178,30 @@ def _by_night(dataset: List[Dict[str, Any]]) -> Dict[str, List[Dict[str, Any]]]:
     return nights
 
 
-def _score(actual: List[str], predicted: List[str]) -> Dict[str, Any]:
+def _score(
+    actual: List[str], predicted: List[str], nights: int = 1
+) -> Dict[str, Any]:
     confusion: Dict[str, Dict[str, int]] = {}
     correct = 0
     for want, got in zip(actual, predicted):
         correct += want == got
         confusion.setdefault(want, {}).setdefault(got, 0)
         confusion[want][got] += 1
+
+    # Per-epoch accuracy counts errors in both directions equally, so a model
+    # can score well and still lean consistently one way. This is what a user
+    # actually sees: minutes of each stage, per night, too many or too few.
+    stages = set(actual) | set(predicted)
+    bias = {
+        stage: round(
+            (predicted.count(stage) - actual.count(stage)) * EPOCH_SECONDS
+            / 60 / max(nights, 1),
+            1,
+        )
+        for stage in sorted(stages)
+    }
     return {
+        "minutes_bias": bias,
         "epochs": len(actual),
         "accuracy": round(correct / len(actual), 3) if actual else None,
         "confusion": confusion,
@@ -247,8 +263,8 @@ def cross_validate(
 
     return {
         "nights": len(nights),
-        "model": _score(actual, predicted),
-        "majority": _score(actual, majority),
+        "model": _score(actual, predicted, nights=len(nights)),
+        "majority": _score(actual, majority, nights=len(nights)),
     }
 
 
@@ -367,6 +383,13 @@ def main(argv: Optional[List[str]] = None) -> int:
                 logger.info(
                     "  %-9s accuracy %s  balanced %s",
                     name, block["accuracy"], block["balanced"],
+                )
+                logger.info(
+                    "      minutes/night vs cloud: %s",
+                    ", ".join(
+                        f"{stage} {value:+.0f}"
+                        for stage, value in block["minutes_bias"].items()
+                    ),
                 )
                 for actual, preds in sorted(block["confusion"].items()):
                     detail = ", ".join(f"{s} {c}" for s, c in sorted(preds.items()))

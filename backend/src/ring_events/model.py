@@ -36,6 +36,13 @@ STAGES = ["deep", "light", "rem", "awake"]
 # optimistic.
 DEFAULT_EMISSION_WEIGHT = 4.0
 
+# How hard to correct for rare stages. 1.0 makes every class count equally,
+# which stops the model answering "light" everywhere but overshoots the other
+# way: it predicts rare stages more often than they occur. 0.0 leaves the
+# natural frequencies alone. Anywhere between trades recall against
+# calibration.
+DEFAULT_CLASS_WEIGHT_POWER = 1.0
+
 # Raw per-epoch signals, as they arrive from the ring.
 RAW_FEATURES = [
     "heart_rate",
@@ -417,6 +424,7 @@ def fit(
     sequences: Optional[List[List[str]]] = None,
     trees: int = 60,
     emission_weight: float = DEFAULT_EMISSION_WEIGHT,
+    class_weight_power: float = DEFAULT_CLASS_WEIGHT_POWER,
     max_depth: int = 5,
     min_leaf: int = 8,
     seed: int = 20260814,
@@ -446,7 +454,7 @@ def fit(
 
     counts = [encoded.count(i) or 1 for i in range(len(STAGES))]
     total = len(encoded)
-    weight_for = [total / (len(STAGES) * c) for c in counts]
+    weight_for = [(total / (len(STAGES) * c)) ** class_weight_power for c in counts]
     weights = [weight_for[label] for label in encoded]
 
     per_split = max(2, int(math.sqrt(len(FEATURES))))
