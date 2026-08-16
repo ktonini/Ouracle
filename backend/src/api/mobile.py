@@ -820,10 +820,9 @@ RING_CURSOR_KEY = "ring_events:cursor"
 RING_ATTEMPT_KEY = "ring_events:last_attempt"
 RING_ADDED_KEY = "ring_events:last_added"
 RING_BACKLOG_KEY = "ring_events:bytes_left"
-RING_REWIND_KEY = "ring_events:rewind"
-# A night the ring no longer holds can never be recovered, so rewinding for it
-# forever would re-read the same span on every sync and never move on.
-MAX_REWIND_ATTEMPTS = 3
+# Defined in ring_events.audit, which reads the same record to stop calling a
+# retired night a failure.
+from ..ring_events.audit import MAX_REWIND_ATTEMPTS, REWIND_KEY as RING_REWIND_KEY
 # Start a little before the session, so its opening minutes aren't clipped.
 REWIND_MARGIN_DECISECONDS = 30 * 60 * 10
 
@@ -994,7 +993,8 @@ class RingCoverageSession(BaseModel):
     # Share of the night with a pulse reading, and with any ring event at all.
     covered_fraction: float
     present_fraction: float = 0.0
-    # covered | not_worn | missing. Only "missing" is a failure: the ring logs
+    # covered | not_worn | missing | unrecoverable. Only "missing" is a
+    # failure: the ring logs
     # temperature off the finger, so a night you didn't wear it leaves a trace
     # and needs no fixing.
     state: str = "covered"
@@ -1027,6 +1027,7 @@ class RingCoverageReport(BaseModel):
     sessions: List[RingCoverageSession] = Field(default_factory=list)
     missing_sessions: List[str] = Field(default_factory=list)
     unworn_sessions: List[str] = Field(default_factory=list)
+    unrecoverable_sessions: List[str] = Field(default_factory=list)
     gaps: List[RingCoverageGap] = Field(default_factory=list)
     largest_gap_hours: float = 0.0
 

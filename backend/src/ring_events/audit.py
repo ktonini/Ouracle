@@ -49,6 +49,32 @@ GAP_HOURS = 6.0
 # but not counted. 30 five-minute epochs is 2.5 hours.
 MIN_LABELS_FOR_A_NIGHT = 30
 
+# Shared with the drain's rewind logic in api/mobile.py.
+REWIND_KEY = "ring_events:rewind"
+# After this many fruitless passes the drain retires a night. Once it has given
+# up, continuing to call that night a failure is just a standing alarm about
+# something nothing can fix.
+MAX_REWIND_ATTEMPTS = 3
+
+
+def _retired(db: Session) -> set:
+    """Nights the drain has stopped chasing."""
+    from ..models import IngestState
+    import json
+
+    row = db.get(IngestState, REWIND_KEY)
+    if not row or not row.value:
+        return set()
+    try:
+        history = json.loads(row.value)
+    except ValueError:
+        return set()
+    return {
+        day
+        for day, seen in history.items()
+        if int((seen or {}).get("attempts", 0)) >= MAX_REWIND_ATTEMPTS
+    }
+
 
 def _stamp(unix_seconds: float) -> str:
     return datetime.fromtimestamp(unix_seconds, timezone.utc).isoformat()
@@ -85,6 +111,7 @@ def coverage_report(db: Session) -> Dict[str, Any]:
         if tag in PULSE_TAGS
     }
 
+    retired = _retired(db)
     sessions: List[Dict[str, Any]] = []
     for session in (
         db.query(SleepSession).order_by(SleepSession.day, SleepSession.bedtime_start).all()
@@ -105,6 +132,9 @@ def coverage_report(db: Session) -> Dict[str, Any]:
 
         if fraction >= MIN_COVERED_FRACTION:
             state = "covered"
+        elif str(session.day) in retired:
+            # The drain tried and gave up; the ring no longer holds it.
+            state = "unrecoverable"
         elif present >= MIN_PRESENT_FRACTION:
             # The ring was there and logging, just not on a finger. Nothing to
             # collect and nothing to fix, so this is not a failure.
@@ -142,7 +172,13 @@ def coverage_report(db: Session) -> Dict[str, Any]:
     counted = [s for s in sessions if s["counted"]]
     missing = [s for s in counted if s["state"] == "missing"]
     unworn = [s for s in counted if s["state"] == "not_worn"]
-    tail = f" ({len(unworn)} not worn)" if unworn else ""
+    gone = [s for s in counted if s["state"] == "unrecoverable"]
+    notes = []
+    if unworn:
+        notes.append(f"{len(unworn)} not worn")
+    if gone:
+        notes.append(f"{len(gone)} unrecoverable")
+    tail = f" ({', '.join(notes)})" if notes else ""
     return {
         "status": "gaps" if missing else "ok",
         "message": (
@@ -156,6 +192,7 @@ def coverage_report(db: Session) -> Dict[str, Any]:
         "sessions": sessions,
         "missing_sessions": [s["day"] for s in missing],
         "unworn_sessions": [s["day"] for s in unworn],
+        "unrecoverable_sessions": [s["day"] for s in gone],
         "gaps": gaps[:10],
         "largest_gap_hours": gaps[0]["hours"] if gaps else 0.0,
     }
@@ -201,7 +238,8 @@ def main(argv: Optional[List[str]] = None) -> int:
             )
         for session in report.get("sessions", []):
             mark = "nap" if not session["counted"] else {
-                "covered": "ok", "not_worn": "off", "missing": "MISS",
+                "covered": "ok", "not_worn": "off",
+                "missing": "MISS", "unrecoverable": "gone",
             }[session["state"]]
             logger.info(
                 "  %s %-5s %3d labels  pulse %5.1f%%  any %5.1f%%",

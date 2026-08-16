@@ -234,3 +234,36 @@ def test_the_rewind_ignores_a_night_that_was_not_worn(db_session):
 
     report = coverage_report(db_session)
     assert resume_cursor_for_gaps(db_session, report) is None
+
+
+def test_a_night_the_drain_gave_up_on_stops_being_a_failure(db_session):
+    """Once the drain has retired a night, calling it a failure is a standing
+    alarm about something nothing can fix."""
+    import json
+
+    from backend.src.models import IngestState
+    from backend.src.ring_events.audit import MAX_REWIND_ATTEMPTS, REWIND_KEY
+
+    _sync(db_session)
+    _session(db_session, "2026-08-07", datetime(2026, 8, 7, 22, 0, tzinfo=timezone.utc), 7)
+    covered = datetime(2026, 8, 9, 22, 0, tzinfo=timezone.utc)
+    _session(db_session, "2026-08-09", covered, 7)
+    _cover(db_session, covered, 7)
+
+    assert coverage_report(db_session)["status"] == "gaps"
+
+    db_session.add(
+        IngestState(
+            key=REWIND_KEY,
+            value=json.dumps({"2026-08-07": {"attempts": MAX_REWIND_ATTEMPTS}}),
+        )
+    )
+    db_session.commit()
+
+    report = coverage_report(db_session)
+    assert report["status"] == "ok"
+    assert report["missing_sessions"] == []
+    assert report["unrecoverable_sessions"] == ["2026-08-07"]
+    assert "unrecoverable" in report["message"]
+    # Still visible, just no longer chased.
+    assert resume_cursor_for_gaps(db_session, report) is None
