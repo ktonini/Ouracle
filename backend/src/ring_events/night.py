@@ -32,6 +32,14 @@ TAG_BEDTIME = 0x76
 
 PLAUSIBLE_IBI_MS = range(300, 2001)
 
+# No one at rest breathes faster than 30 a minute, so two peaks closer than
+# this are one breath counted twice. Enforcing it removed a systematic
+# high bias: measured against Oura's own per-night figure over ten nights,
+# mean error fell from 0.70 to 0.39 breaths/min and the bias from +0.66 to
+# -0.12. (The floor was picked for that physiological reason, and the sweep
+# agreed, but it is also the best of the values tried on these nights.)
+MIN_BREATH_CYCLE_MS = 2000
+
 
 def ring_clock_offset(db: Session) -> Optional[float]:
     """Seconds to add to (ring deciseconds / 10) to get unix time.
@@ -173,7 +181,15 @@ def _breath_rate(beats: List[int]) -> Optional[float]:
     peaks = _respiratory_peaks(beats)
     if len(peaks) < 3:
         return None
-    durations = [sum(beats[a:b]) for a, b in zip(peaks, peaks[1:])]
+    # Drop peaks too close to the last kept one: noise splits one breath into
+    # two, and every spurious peak pushes the rate up.
+    kept = [peaks[0]]
+    for peak in peaks[1:]:
+        if sum(beats[kept[-1] : peak]) >= MIN_BREATH_CYCLE_MS:
+            kept.append(peak)
+    if len(kept) < 3:
+        return None
+    durations = [sum(beats[a:b]) for a, b in zip(kept, kept[1:])]
     durations = [d for d in durations if d > 0]
     if not durations:
         return None

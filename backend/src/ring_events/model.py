@@ -46,6 +46,7 @@ RAW_FEATURES = [
     "sdnn_rmssd",
     "pnn50",
     "breath_irregularity",
+    "breath_rate",
 ]
 
 # Everything the model actually sees. The night-relative terms matter more

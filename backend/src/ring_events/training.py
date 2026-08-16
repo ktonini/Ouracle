@@ -96,6 +96,7 @@ def build_dataset(db: Session) -> List[Dict[str, Any]]:
                     "breath_irregularity": features_by_time.get(bucket, {}).get(
                         "breath_irregularity"
                     ),
+                    "breath_rate": features_by_time.get(bucket, {}).get("breath_rate"),
                     "label": stage,
                 }
             )
@@ -141,6 +142,7 @@ def evaluate_heuristic(db: Session) -> Dict[str, Any]:
                     "sdnn_rmssd": r.get("sdnn_rmssd"),
                     "pnn50": r.get("pnn50"),
                     "breath_irregularity": r.get("breath_irregularity"),
+                    "breath_rate": r.get("breath_rate"),
                 }
                 for r in rows
                 if r.get("sdnn_rmssd") is not None

@@ -59,6 +59,7 @@ class Epoch:
     sdnn_rmssd: Optional[float] = None
     pnn50: Optional[float] = None
     breath_irregularity: Optional[float] = None
+    breath_rate: Optional[float] = None
     # Filled in by stage_epochs: position through the night, 0…1. Sleep
     # architecture is strongly time-dependent — deep dominates the first
     # third, REM the last — so this is the single most useful extra feature.
@@ -116,6 +117,7 @@ def _stage_with_model(epochs: List[Epoch], forest) -> List[Dict[str, Any]]:
             "sdnn_rmssd": e.sdnn_rmssd,
             "pnn50": e.pnn50,
             "breath_irregularity": e.breath_irregularity,
+            "breath_rate": e.breath_rate,
         }
         for e in epochs
     ]
@@ -368,5 +370,6 @@ def build_epochs(
         epoch.sdnn_rmssd = features.get("sdnn_rmssd")
         epoch.pnn50 = features.get("pnn50")
         epoch.breath_irregularity = features.get("breath_irregularity")
+        epoch.breath_rate = features.get("breath_rate")
 
     return [by_time[key] for key in sorted(by_time)]

@@ -286,3 +286,21 @@ def test_night_features_include_breath_rate(db_session):
     features = next(iter(night["ibi_features"].values()))
     assert features["breath_rate"] is not None
     assert 10 <= features["breath_rate"] <= 14
+
+
+def test_a_spurious_peak_does_not_double_the_breathing_rate():
+    """Noise splitting one breath in two is what made the rate read high; a
+    minimum cycle length is what stops it."""
+    import math
+
+    from backend.src.ring_events.night import _breath_rate
+
+    # 12 breaths/min, with a small ripple riding on top that creates an extra
+    # local maximum inside each breath.
+    beats = [
+        round(1000 + 40 * math.sin(i * 2 * math.pi / 5) + 6 * math.sin(i * 2 * math.pi / 2.5))
+        for i in range(400)
+    ]
+    rate = _breath_rate(beats)
+    assert rate is not None
+    assert 11.0 <= rate <= 13.5, rate  # not ~24
