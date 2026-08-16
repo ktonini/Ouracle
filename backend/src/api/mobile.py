@@ -1135,6 +1135,9 @@ class RingNightResponse(BaseModel):
     # Breaths per minute, derived from the beat intervals. Validated against
     # Oura's own per-night figure to 0.39 breaths/min over ten nights.
     breath_rate: Optional[float] = None
+    # Blood oxygen, from the ring's ratio-of-ratios through a calibration
+    # fitted to this ring against Oura's own figures.
+    spo2_percent: Optional[float] = None
     detected_bedtimes: List[Dict[str, Any]] = Field(default_factory=list)
     coverage: Optional[Dict[str, Any]] = None
     # Locally derived; see ring_events.staging for the method and its limits.
@@ -1190,6 +1193,10 @@ def ring_night(
     # Median across the night: a bucket whose peak detection went astray should
     # not move the figure the way a mean would.
     night["breath_rate"] = round(median(rates), 1) if len(rates) >= 5 else None
+
+    from ..ring_events.spo2 import estimate, ratios_between
+
+    night["spo2_percent"] = estimate(ratios_between(db, start, end))
     night["detected_bedtimes"] = detected_bedtimes(db)
     night["coverage"] = coverage(db)
 

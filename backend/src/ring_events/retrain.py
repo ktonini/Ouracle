@@ -91,6 +91,20 @@ def main(argv: Optional[List[str]] = None) -> int:
             except Exception:
                 logger.exception("could not send the coverage alert")
 
+        # The SpO2 calibration improves with nights the same way the model
+        # does, and costs almost nothing to refit.
+        from .spo2 import fit_calibration
+
+        calibration = fit_calibration(db)
+        if calibration.get("fitted"):
+            logger.info(
+                "spo2 calibration: SpO2 = %.2f - %.4f * R over %d nights (error %.2f%%)",
+                calibration["a"], calibration["b"], calibration["nights"],
+                calibration.get("error") or 0.0,
+            )
+        else:
+            logger.info("spo2 calibration not fitted: %s", calibration.get("reason"))
+
         result = retrain(db, force=args.force)
         if result.get("trained"):
             logger.info(
