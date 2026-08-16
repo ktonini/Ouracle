@@ -275,6 +275,11 @@ class Forest:
     # which case decoding falls back to per-epoch argmax.
     transitions: Optional[List[List[float]]] = None
     initial: Optional[List[float]] = None
+    # How much the per-epoch evidence counts against the transition prior. A
+    # forest averages many leaf distributions, so its probabilities are flat
+    # rather than calibrated likelihoods; at 1.0 the prior simply overwhelms
+    # them and every night collapses toward the commonest stage.
+    emission_weight: float = 1.0
 
     def to_json(self) -> Dict[str, Any]:
         return {
@@ -284,6 +289,7 @@ class Forest:
             "medians": self.medians,
             "transitions": self.transitions,
             "initial": self.initial,
+            "emission_weight": self.emission_weight,
             "trees": [tree.to_json() for tree in self.trees],
         }
 
@@ -296,10 +302,13 @@ class Forest:
             stages=blob["stages"],
             transitions=blob.get("transitions"),
             initial=blob.get("initial"),
+            emission_weight=blob.get("emission_weight", 1.0),
         )
 
     def decode(
-        self, sequence: List[Dict[str, Optional[float]]]
+        self,
+        sequence: List[Dict[str, Optional[float]]],
+        emission_weight: Optional[float] = None,
     ) -> List[Tuple[str, float]]:
         """The most likely *sequence* of stages, not the most likely stage at
         each epoch independently.
@@ -324,11 +333,15 @@ class Forest:
 
         size = len(self.stages)
         floor = 1e-9  # a zero-probability stage must not poison the whole path
+        weight = self.emission_weight if emission_weight is None else emission_weight
 
         def log(x: float) -> float:
             return math.log(max(x, floor))
 
-        score = [log(self.initial[s]) + log(probabilities[0][s]) for s in range(size)]
+        def emit(step: int, stage: int) -> float:
+            return weight * log(probabilities[step][stage])
+
+        score = [log(self.initial[s]) + emit(0, s) for s in range(size)]
         back: List[List[int]] = []
         for step in range(1, len(probabilities)):
             previous, score = score, [0.0] * size
@@ -339,7 +352,7 @@ class Forest:
                     value = previous[prior] + log(self.transitions[prior][current])
                     if best is None or value > best:
                         best, best_from = value, prior
-                score[current] = best + log(probabilities[step][current])
+                score[current] = best + emit(step, current)
                 choice[current] = best_from
             back.append(choice)
 
