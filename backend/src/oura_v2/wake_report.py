@@ -43,6 +43,14 @@ MARKER_PREFIX = "wake_report:"
 # Sessions shorter than this are naps/rest, not the night's sleep.
 MIN_SESSION_SECONDS = 60 * 60
 
+# Ring-derived fallback. Looked for over this many hours back from now, so it
+# works whatever hours you keep — a fixed evening-to-morning window assumes a
+# schedule, and gets it wrong for anyone sleeping across UTC midday.
+RING_LOOKBACK_HOURS = 30
+# A block this long is a night. Shorter is a nap, and not what the morning
+# report is for.
+MIN_RING_SLEEP_MINUTES = 180
+
 
 def _fmt_duration(seconds: int) -> str:
     return f"{seconds // 3600}h {seconds % 3600 // 60:02d}m"
@@ -95,6 +103,91 @@ def compose_report(
     if detail:
         parts.append(" · ".join(detail))
 
+    return "\n".join(parts)
+
+
+def _longest_recent_sleep(staged: List[dict]) -> List[dict]:
+    """The most recent run of asleep epochs, ignoring brief awakenings.
+
+    Waking for five minutes at 4am does not end the night, so short awake
+    stretches are absorbed rather than splitting the block in two.
+    """
+    blocks: List[List[dict]] = []
+    current: List[dict] = []
+    awake_run = 0
+    for epoch in staged:
+        if epoch["stage"] == "awake":
+            awake_run += 1
+            if awake_run > 3 and current:  # more than ~15 minutes up
+                blocks.append(current)
+                current = []
+            elif current:
+                current.append(epoch)
+        else:
+            awake_run = 0
+            current.append(epoch)
+    if current:
+        blocks.append(current)
+
+    long_enough = [
+        b for b in blocks if len(b) * 5 >= MIN_RING_SLEEP_MINUTES
+    ]
+    return long_enough[-1] if long_enough else []
+
+
+def ring_report_for_day(db: Session, day: date) -> Optional[str]:
+    """A report built from the ring alone, for when Oura hasn't scored yet.
+
+    The whole point of reading the ring directly is not depending on their
+    pipeline; a morning push that waits for their scoring still does.
+    """
+    from ..ring_events.staging import EPOCH_MINUTES, build_epochs, stage_epochs
+    from ..ring_events.night import build_night
+
+    end = datetime.now(timezone.utc).replace(tzinfo=None)
+    start = end - timedelta(hours=RING_LOOKBACK_HOURS)
+    night = build_night(db, start, end)
+    if night.get("error") or not night.get("heart_rate"):
+        return None
+
+    staged = stage_epochs(
+        build_epochs(
+            night.get("heart_rate", []),
+            night.get("movement", []),
+            night.get("hrv", {}),
+            movement_peak=night.get("movement_peak", []),
+            temperature=night.get("temperature", []),
+            ibi_features=night.get("ibi_features", {}),
+        )
+    )
+    block = _longest_recent_sleep(staged)
+    if not block:
+        return None
+
+    minutes: dict = {}
+    for epoch in block:
+        minutes[epoch["stage"]] = minutes.get(epoch["stage"], 0) + EPOCH_MINUTES
+    asleep = sum(v for k, v in minutes.items() if k != "awake")
+
+    began = datetime.fromisoformat(block[0]["t"]).replace(tzinfo=None)
+    ended = datetime.fromisoformat(block[-1]["t"]).replace(tzinfo=None) + timedelta(
+        minutes=EPOCH_MINUTES
+    )
+
+    parts = [
+        f"You slept {_fmt_duration(asleep * 60)}"
+        f" ({_fmt_clock(began)} – {_fmt_clock(ended)})",
+        "From the ring — Oura hasn't scored this night yet",
+    ]
+    detail = [
+        f"{name} {_fmt_duration(minutes[key] * 60)}"
+        for key, name in (("deep", "deep"), ("rem", "REM"))
+        if minutes.get(key)
+    ]
+    if night.get("lowest_hr"):
+        detail.append(f"RHR {night['lowest_hr']}")
+    if detail:
+        parts.append(" · ".join(detail))
     return "\n".join(parts)
 
 
@@ -172,6 +265,16 @@ def main(argv: Optional[List[str]] = None) -> int:
                     mark_sent(db, day)
                     logger.info("Wake report sent for %s.", day)
                 return 0
+
+            # Nothing from the cloud. Fall back to the ring, which already
+            # holds the night — waiting on Oura's scoring is the dependency
+            # this project exists to remove.
+            if db.get(IngestState, MARKER_PREFIX + today.isoformat()) is None or args.force:
+                message = ring_report_for_day(db, today)
+                if message and notify(db, "Last night", message):
+                    mark_sent(db, today)
+                    logger.info("Wake report sent for %s from ring data.", today)
+                    return 0
 
             logger.info("No new sleep to report for %s.", today)
         finally:
