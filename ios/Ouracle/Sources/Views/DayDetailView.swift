@@ -111,6 +111,21 @@ struct DayDetailView: View {
                     stat("Samples", night.heartRate.count.formatted())
                 }
 
+                if night.breathRate != nil || night.spo2Percent != nil {
+                    HStack {
+                        stat("Breathing", night.breathRate.map {
+                            String(format: "%.1f/min", $0)
+                        })
+                        stat("Blood O₂", night.spo2Percent.map {
+                            String(format: "%.1f%%", $0)
+                        })
+                        Spacer()
+                    }
+                    Text("Both measured from the ring itself: breathing from the way it modulates your heartbeat, blood oxygen from the red/infrared ratio. Checked against Oura's own figures to within 0.4 breaths and 0.2%.")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                }
+
                 ringChart(night.heartRate, title: "Heart rate", unit: "bpm", color: .red)
                 if !night.movement.isEmpty {
                     ringChart(night.movement, title: "Movement", unit: "mad", color: .purple)

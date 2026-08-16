@@ -324,6 +324,11 @@ struct RingNight: Codable, Equatable {
     let beats: Int
     let lowestHr: Int?
     let averageHr: Int?
+    /// Breaths per minute, from the respiratory wave in the beat intervals.
+    let breathRate: Double?
+    /// Blood oxygen, from the ring's ratio-of-ratios through a calibration
+    /// fitted to this ring against Oura's own figures.
+    let spo2Percent: Double?
     struct Stage: Codable, Equatable, Identifiable {
         let t: String
         let stage: String
@@ -362,6 +367,8 @@ struct RingNight: Codable, Equatable {
         case movement, temperature
         case lowestHr = "lowest_hr"
         case averageHr = "average_hr"
+        case breathRate = "breath_rate"
+        case spo2Percent = "spo2_percent"
         case eventCount = "event_count"
         case detectedBedtimes = "detected_bedtimes"
         case stages

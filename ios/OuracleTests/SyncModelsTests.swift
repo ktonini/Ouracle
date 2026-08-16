@@ -166,3 +166,31 @@ extension SyncModelsTests {
         }
     }
 }
+
+extension SyncModelsTests {
+    /// Both metrics are derived on the server from ring signals; the app must
+    /// carry them through, and tolerate a night that has neither.
+    func testDecodesBreathingRateAndBloodOxygen() throws {
+        let json = """
+        {"start":"2026-08-13T12:00:00+00:00","end":"2026-08-13T19:00:00+00:00",
+         "heart_rate":[],"movement":[],"temperature":[],"beats":15963,
+         "lowest_hr":66,"average_hr":68,"breath_rate":12.1,"spo2_percent":93.1,
+         "event_count":8509,"detected_bedtimes":[],"stages":[]}
+        """
+        let night = try JSONDecoder().decode(RingNight.self, from: Data(json.utf8))
+        XCTAssertEqual(night.breathRate ?? 0, 12.1, accuracy: 0.001)
+        XCTAssertEqual(night.spo2Percent ?? 0, 93.1, accuracy: 0.001)
+    }
+
+    func testANightWithoutThoseMetricsStillDecodes() throws {
+        let json = """
+        {"start":"2026-08-13T12:00:00+00:00","end":"2026-08-13T19:00:00+00:00",
+         "heart_rate":[],"movement":[],"temperature":[],"beats":0,
+         "event_count":0,"detected_bedtimes":[],"stages":[]}
+        """
+        let night = try JSONDecoder().decode(RingNight.self, from: Data(json.utf8))
+        XCTAssertNil(night.breathRate)
+        XCTAssertNil(night.spo2Percent)
+        XCTAssertNil(night.lowestHr)
+    }
+}
