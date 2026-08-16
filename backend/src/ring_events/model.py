@@ -46,7 +46,13 @@ RAW_FEATURES = [
     "sdnn_rmssd",
     "pnn50",
     "breath_irregularity",
-    "breath_rate",
+    # Respiratory *rate* is deliberately absent. It is an accurate metric —
+    # 0.39 breaths/min against Oura's own figure — but as a feature it cost
+    # 0.05 balanced accuracy, measured leave-one-night-out. It is often
+    # missing (a bucket needs several clean breath cycles), and with only a
+    # handful of features sampled per split, a noisy one crowds out useful
+    # ones. Irregularity, which does not need the cycle length, already
+    # carries the part that separates REM.
 ]
 
 # Everything the model actually sees. The night-relative terms matter more
