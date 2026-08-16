@@ -19,14 +19,14 @@ import json
 import logging
 import sys
 from datetime import datetime, timezone
-from statistics import mean
+from statistics import mean, median
 from typing import Any, Dict, List, Optional, Tuple
 
 from sqlalchemy.orm import Session
 
 from ..models import RingEventRaw, Sleep, SleepSession
 from ..paths import get_user_data_dir
-from .night import ring_clock_offset, to_ring_ds
+from .night import ring_clock_offset, to_ring_ds, to_unix
 
 logger = logging.getLogger("RingSpO2")
 
@@ -41,6 +41,19 @@ DEFAULT_B = 0.34
 
 # Below this a night's R is too sparse to average meaningfully.
 MIN_RATIOS_PER_NIGHT = 200
+# Per bucket the bar is much lower — the ring records around ten readings a
+# minute — but a bucket built from two readings is noise.
+MIN_RATIOS_PER_BUCKET = 8
+
+# A drop of this much below the recent baseline is a desaturation, the
+# threshold sleep medicine uses for the oxygen desaturation index.
+DESATURATION_DROP = 3.0
+# The baseline is the median of the preceding stretch rather than the whole
+# night: saturation drifts, and a dip is a departure from where you just were.
+BASELINE_MINUTES = 10
+# An event ends when saturation comes back to within this of the baseline, so
+# one long dip counts once instead of flickering across the threshold.
+RECOVERY_MARGIN = 1.0
 # Two coefficients fitted on fewer nights than this is not worth trusting.
 MIN_NIGHTS_TO_FIT = 4
 
@@ -64,6 +77,116 @@ def ratios_between(db: Session, start: datetime, end: datetime) -> List[int]:
     ):
         values.extend((row.decoded or {}).get("ratio", []))
     return values
+
+
+def ratio_samples(db: Session, start: datetime, end: datetime) -> List[Tuple[float, int]]:
+    """(unix seconds, R) for a window, so readings can be placed in time."""
+    offset = ring_clock_offset(db)
+    if offset is None:
+        return []
+    lo, hi = to_ring_ds(start, offset), to_ring_ds(end, offset)
+    out: List[Tuple[float, int]] = []
+    for row in (
+        db.query(RingEventRaw)
+        .filter(
+            RingEventRaw.tag == TAG_SPO2_R,
+            RingEventRaw.timestamp >= lo,
+            RingEventRaw.timestamp <= hi,
+            RingEventRaw.decoded.isnot(None),
+        )
+        .order_by(RingEventRaw.timestamp)
+        .all()
+    ):
+        ratios = (row.decoded or {}).get("ratio", [])
+        when = to_unix(row.timestamp, offset)
+        # A frame's readings are consecutive samples; spread them across the
+        # second rather than stacking them all on one instant.
+        for index, ratio in enumerate(ratios):
+            out.append((when + index, ratio))
+    return out
+
+
+def _saturation(ratios: List[int], calibration: Dict[str, Any]) -> Optional[float]:
+    if not ratios:
+        return None
+    value = calibration["a"] - calibration["b"] * mean(ratios)
+    return value if 70.0 <= value <= 100.0 else None
+
+
+def series(
+    db: Session, start: datetime, end: datetime, minutes: int = 5
+) -> List[Dict[str, Any]]:
+    """Saturation through the night, one point per `minutes`."""
+    samples = ratio_samples(db, start, end)
+    if not samples:
+        return []
+    calibration = load_calibration()
+    width = minutes * 60
+    buckets: Dict[int, List[int]] = {}
+    for when, ratio in samples:
+        buckets.setdefault(int(when // width) * width, []).append(ratio)
+
+    points = []
+    for bucket_start, ratios in sorted(buckets.items()):
+        if len(ratios) < MIN_RATIOS_PER_BUCKET:
+            continue
+        value = _saturation(ratios, calibration)
+        if value is None:
+            continue
+        points.append(
+            {
+                "t": datetime.fromtimestamp(bucket_start, timezone.utc).isoformat(),
+                "value": round(value, 1),
+            }
+        )
+    return points
+
+
+def desaturations(points: List[Dict[str, Any]], minutes: int = 1) -> Dict[str, Any]:
+    """Drops of 3% or more below the recent baseline, and the rate per hour.
+
+    This is the oxygen desaturation index as sleep medicine defines it. It is
+    an observation from a consumer sensor on a finger, not a diagnosis, and a
+    single night says very little either way.
+    """
+    if len(points) < BASELINE_MINUTES // minutes + 2:
+        return {"events": [], "index": None, "lowest": None}
+
+    values = [p["value"] for p in points]
+    window = max(BASELINE_MINUTES // minutes, 2)
+    events: List[Dict[str, Any]] = []
+    in_event = False
+    lowest_seen = None
+
+    for index in range(window, len(values)):
+        baseline = median(values[index - window : index])
+        value = values[index]
+        if not in_event and value <= baseline - DESATURATION_DROP:
+            in_event = True
+            lowest_seen = value
+            events.append(
+                {
+                    "t": points[index]["t"],
+                    "baseline": round(baseline, 1),
+                    "lowest": value,
+                    "drop": round(baseline - value, 1),
+                }
+            )
+        elif in_event:
+            if lowest_seen is None or value < lowest_seen:
+                lowest_seen = value
+                events[-1]["lowest"] = value
+                events[-1]["drop"] = round(events[-1]["baseline"] - value, 1)
+            if value >= baseline - RECOVERY_MARGIN:
+                in_event = False
+                lowest_seen = None
+
+    hours = len(values) * minutes / 60.0
+    return {
+        "events": events,
+        "index": round(len(events) / hours, 1) if hours > 0 else None,
+        "lowest": min(values),
+    }
 
 
 def load_calibration() -> Dict[str, Any]:

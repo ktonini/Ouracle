@@ -1138,6 +1138,12 @@ class RingNightResponse(BaseModel):
     # Blood oxygen, from the ring's ratio-of-ratios through a calibration
     # fitted to this ring against Oura's own figures.
     spo2_percent: Optional[float] = None
+    # Saturation through the night, and drops of 3% or more below the recent
+    # baseline. An observation from a finger sensor, not a diagnosis.
+    spo2_series: List[RingNightPoint] = Field(default_factory=list)
+    desaturation_index: Optional[float] = None
+    desaturations: List[Dict[str, Any]] = Field(default_factory=list)
+    lowest_spo2: Optional[float] = None
     detected_bedtimes: List[Dict[str, Any]] = Field(default_factory=list)
     coverage: Optional[Dict[str, Any]] = None
     # Locally derived; see ring_events.staging for the method and its limits.
@@ -1194,9 +1200,18 @@ def ring_night(
     # not move the figure the way a mean would.
     night["breath_rate"] = round(median(rates), 1) if len(rates) >= 5 else None
 
-    from ..ring_events.spo2 import estimate, ratios_between
+    from ..ring_events.spo2 import (
+        desaturations, estimate, ratios_between, series,
+    )
 
     night["spo2_percent"] = estimate(ratios_between(db, start, end))
+    night["spo2_series"] = series(db, start, end, minutes=5)
+    # Events are found on a finer series than the one drawn: a dip lasting two
+    # minutes disappears entirely into five-minute averages.
+    dips = desaturations(series(db, start, end, minutes=1), minutes=1)
+    night["desaturation_index"] = dips["index"]
+    night["desaturations"] = dips["events"]
+    night["lowest_spo2"] = dips["lowest"]
     night["detected_bedtimes"] = detected_bedtimes(db)
     night["coverage"] = coverage(db)
 

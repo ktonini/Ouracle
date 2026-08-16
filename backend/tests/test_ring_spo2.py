@@ -142,3 +142,100 @@ def test_ratios_between_reads_only_the_window(db_session):
     after = ratios_between(db_session, (start + timedelta(days=2)).replace(tzinfo=None),
                            (start + timedelta(days=3)).replace(tzinfo=None))
     assert after == []
+
+
+def _saturating_night(db, day, values, minutes=1):
+    """A night whose saturation follows `values`, one per `minutes`."""
+    from backend.src.ring_events.spo2 import DEFAULT_A, DEFAULT_B
+
+    start = datetime(2026, 8, day, 22, 0, tzinfo=timezone.utc)
+    for index, spo2 in enumerate(values):
+        ratio = round((DEFAULT_A - spo2) / DEFAULT_B)
+        ds = to_ring_ds(start + timedelta(minutes=index * minutes), EPOCH)
+        db.add(
+            RingEventRaw(
+                id=f"8b-{day}-{ds}", tag=0x8B, timestamp=ds, body="00",
+                decoded={"ratio": [ratio] * 12},
+            )
+        )
+    db.commit()
+    return start, start + timedelta(minutes=len(values) * minutes)
+
+
+def test_series_follows_saturation_through_the_night(db_session, tmp_path, monkeypatch):
+    from backend.src.ring_events.spo2 import series
+
+    monkeypatch.setenv("OURACLE_DATA_DIR", str(tmp_path))
+    start, end = _saturating_night(db_session, 12, [96.0] * 30 + [92.0] * 30)
+    points = series(db_session, start.replace(tzinfo=None), end.replace(tzinfo=None),
+                    minutes=5)
+    assert len(points) == 12
+    assert points[0]["value"] == pytest.approx(96.0, abs=0.5)
+    assert points[-1]["value"] == pytest.approx(92.0, abs=0.5)
+
+
+def test_a_steady_night_has_no_desaturations(db_session, tmp_path, monkeypatch):
+    from backend.src.ring_events.spo2 import desaturations, series
+
+    monkeypatch.setenv("OURACLE_DATA_DIR", str(tmp_path))
+    start, end = _saturating_night(db_session, 12, [95.0] * 60)
+    dips = desaturations(
+        series(db_session, start.replace(tzinfo=None), end.replace(tzinfo=None), minutes=1),
+        minutes=1,
+    )
+    assert dips["events"] == []
+    assert dips["index"] == 0.0
+
+
+def test_a_dip_is_counted_once_and_measured(db_session, tmp_path, monkeypatch):
+    """One long dip is one event, not one per minute below the threshold."""
+    from backend.src.ring_events.spo2 import desaturations, series
+
+    monkeypatch.setenv("OURACLE_DATA_DIR", str(tmp_path))
+    values = [95.0] * 20 + [90.0] * 5 + [95.0] * 35
+    start, end = _saturating_night(db_session, 12, values)
+    dips = desaturations(
+        series(db_session, start.replace(tzinfo=None), end.replace(tzinfo=None), minutes=1),
+        minutes=1,
+    )
+    assert len(dips["events"]) == 1
+    assert dips["events"][0]["drop"] == pytest.approx(5.0, abs=0.6)
+    assert dips["lowest"] == pytest.approx(90.0, abs=0.5)
+    assert dips["index"] == pytest.approx(1.0, abs=0.1)  # one event in an hour
+
+
+def test_repeated_dips_each_count(db_session, tmp_path, monkeypatch):
+    from backend.src.ring_events.spo2 import desaturations, series
+
+    monkeypatch.setenv("OURACLE_DATA_DIR", str(tmp_path))
+    values = [95.0] * 15
+    for _ in range(4):
+        values += [90.0] * 3 + [95.0] * 10
+    start, end = _saturating_night(db_session, 12, values)
+    dips = desaturations(
+        series(db_session, start.replace(tzinfo=None), end.replace(tzinfo=None), minutes=1),
+        minutes=1,
+    )
+    assert len(dips["events"]) == 4
+
+
+def test_a_slow_drift_is_not_a_desaturation(db_session, tmp_path, monkeypatch):
+    """Saturation wandering down over an hour is not a dip — the baseline moves
+    with it, which is why the baseline is recent rather than the whole night."""
+    from backend.src.ring_events.spo2 import desaturations, series
+
+    monkeypatch.setenv("OURACLE_DATA_DIR", str(tmp_path))
+    values = [96.0 - i * 0.1 for i in range(60)]
+    start, end = _saturating_night(db_session, 12, values)
+    dips = desaturations(
+        series(db_session, start.replace(tzinfo=None), end.replace(tzinfo=None), minutes=1),
+        minutes=1,
+    )
+    assert dips["events"] == []
+
+
+def test_too_short_a_night_reports_nothing(db_session, tmp_path, monkeypatch):
+    from backend.src.ring_events.spo2 import desaturations
+
+    monkeypatch.setenv("OURACLE_DATA_DIR", str(tmp_path))
+    assert desaturations([{"t": "x", "value": 95.0}] * 3)["index"] is None
