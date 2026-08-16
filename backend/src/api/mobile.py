@@ -1035,6 +1035,37 @@ class RingCoverageReport(BaseModel):
     model_config = {"populate_by_name": True}
 
 
+class RingTrendNight(BaseModel):
+    day: str
+    ours: Dict[str, Any] = Field(default_factory=dict)
+    theirs: Dict[str, Any] = Field(default_factory=dict)
+
+
+class RingTrendsResponse(BaseModel):
+    """Our nightly figures beside Oura's, and how far apart they run.
+
+    Both on the same axes is a standing check: the SpO2 calibration and the
+    staging model are both refitted nightly, so a divergence here is the first
+    sign one of them has wandered.
+    """
+
+    nights: List[RingTrendNight] = Field(default_factory=list)
+    agreement: Dict[str, Any] = Field(default_factory=dict)
+
+
+@mobile_client_router.get("/api/mobile/ring-trends", response_model=RingTrendsResponse)
+def ring_trends(
+    days: int = Query(default=30, ge=1, le=90),
+    _: Dict[str, Any] = Depends(_require_mobile_token),
+    db: Session = Depends(get_db),
+):
+    """Per-night ring figures across a window, beside the cloud's."""
+    from ..ring_events.trends import agreement, nightly_summaries
+
+    rows = nightly_summaries(db, days=days)
+    return RingTrendsResponse(nights=rows, agreement=agreement(rows))
+
+
 @mobile_client_router.get(
     "/api/mobile/ring-coverage", response_model=RingCoverageReport
 )
