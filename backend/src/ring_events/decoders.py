@@ -121,14 +121,17 @@ def decode_spo2_r_pi(body: bytes) -> Optional[Dict[str, Any]]:
     The other two bytes of each triplet are kept but not interpreted; they are
     probably perfusion index and a DC amplitude.
     """
-    if len(body) != 13:
+    # Usually four triplets, but the ring emits shorter frames too — a fixed
+    # length rejected 49 of them outright.
+    if len(body) < 4 or (len(body) - 1) % 3:
         return None
-    ratios = [body[i] for i in (1, 4, 7, 10)]
+    starts = range(1, len(body) - 2, 3)
+    ratios = [body[i] for i in starts]
     if not all(1 <= r <= 200 for r in ratios):
         return None
     return {
         "ratio": ratios,
-        "unidentified": [[body[i + 1], body[i + 2]] for i in (1, 4, 7, 10)],
+        "unidentified": [[body[i + 1], body[i + 2]] for i in starts],
     }
 
 

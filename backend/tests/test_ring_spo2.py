@@ -42,8 +42,17 @@ def test_decodes_the_four_ratio_readings():
     assert len(decoded["unidentified"]) == 4
 
 
+def test_decodes_a_short_frame():
+    """The ring emits three-triplet frames too; a fixed length rejected 49."""
+    decoded = decode_spo2_r_pi(bytes.fromhex("002c56ff36caff28a3ff"))
+    assert decoded is not None
+    assert decoded["ratio"] == [0x2C, 0x36, 0x28]
+
+
 def test_rejects_the_wrong_shape():
     assert decode_spo2_r_pi(b"\x00\x01\x02") is None
+    # Not a whole number of triplets.
+    assert decode_spo2_r_pi(bytes(12)) is None
     # A ratio of zero is not a reading.
     assert decode_spo2_r_pi(bytes(13)) is None
 
