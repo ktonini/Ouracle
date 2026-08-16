@@ -49,7 +49,8 @@ def _session(db, day, start, hours, labels=60):
 
 
 def _cover(db, start, hours, every_minutes=5, tag=0x60):
-    """Ring events every `every_minutes` across a window."""
+    """Ring events every `every_minutes` across a window. Tag 0x60 is a pulse
+    reading — only produced on a finger."""
     steps = int(hours * 60 / every_minutes)
     for step in range(steps):
         when = start + timedelta(minutes=step * every_minutes)
@@ -186,3 +187,50 @@ def test_rewind_skips_naps_and_targets_a_real_night(db_session):
     report = coverage_report(db_session)
     assert report["missing_sessions"] == ["2026-08-12"]
     assert resume_cursor_for_gaps(db_session, report) == to_ring_ds(real, EPOCH)
+
+
+def test_a_night_the_ring_was_not_worn_is_not_a_failure(db_session):
+    """Off the finger the ring still logs temperature, so the night leaves a
+    trace. There is nothing to collect and nothing to fix."""
+    _sync(db_session)
+    start = datetime(2026, 8, 15, 22, 0, tzinfo=timezone.utc)
+    _session(db_session, "2026-08-15", start, 7)
+    # Temperature every five minutes, no pulse anywhere.
+    _cover(db_session, start, 7, tag=0x46)
+
+    report = coverage_report(db_session)
+    assert report["status"] == "ok"
+    assert report["missing_sessions"] == []
+    assert report["unworn_sessions"] == ["2026-08-15"]
+    night = report["sessions"][0]
+    assert night["state"] == "not_worn"
+    assert night["covered_fraction"] == 0.0   # no pulse
+    assert night["present_fraction"] > 0.9    # but the ring was logging
+    assert "not worn" in report["message"]
+
+
+def test_silence_is_still_treated_as_missing(db_session):
+    """No events at all means we never collected it — the ring would have left
+    a temperature trace had it been powered and present."""
+    _sync(db_session)
+    covered = datetime(2026, 8, 9, 22, 0, tzinfo=timezone.utc)
+    _session(db_session, "2026-08-09", covered, 7)
+    _cover(db_session, covered, 7)
+    _session(db_session, "2026-08-12", datetime(2026, 8, 12, 22, 0, tzinfo=timezone.utc), 7)
+
+    report = coverage_report(db_session)
+    assert report["status"] == "gaps"
+    assert report["missing_sessions"] == ["2026-08-12"]
+    assert [s for s in report["sessions"] if s["day"] == "2026-08-12"][0]["state"] == "missing"
+
+
+def test_the_rewind_ignores_a_night_that_was_not_worn(db_session):
+    """Chasing data that was never recorded would re-read the same span until
+    the attempt budget ran out."""
+    _sync(db_session)
+    start = datetime(2026, 8, 15, 22, 0, tzinfo=timezone.utc)
+    _session(db_session, "2026-08-15", start, 7)
+    _cover(db_session, start, 7, tag=0x46)
+
+    report = coverage_report(db_session)
+    assert resume_cursor_for_gaps(db_session, report) is None

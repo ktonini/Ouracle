@@ -991,7 +991,13 @@ class RingCoverageSession(BaseModel):
     start: datetime
     end: datetime
     labels: int
+    # Share of the night with a pulse reading, and with any ring event at all.
     covered_fraction: float
+    present_fraction: float = 0.0
+    # covered | not_worn | missing. Only "missing" is a failure: the ring logs
+    # temperature off the finger, so a night you didn't wear it leaves a trace
+    # and needs no fixing.
+    state: str = "covered"
     covered: bool
     # Short naps are reported but don't count as failures.
     counted: bool = True
@@ -1020,6 +1026,7 @@ class RingCoverageReport(BaseModel):
     to: Optional[datetime] = None
     sessions: List[RingCoverageSession] = Field(default_factory=list)
     missing_sessions: List[str] = Field(default_factory=list)
+    unworn_sessions: List[str] = Field(default_factory=list)
     gaps: List[RingCoverageGap] = Field(default_factory=list)
     largest_gap_hours: float = 0.0
 

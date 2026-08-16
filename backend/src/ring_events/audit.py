@@ -29,9 +29,17 @@ from .night import ring_clock_offset, to_ring_ds, to_unix
 logger = logging.getLogger("RingAudit")
 
 # A session counts as covered when this share of its five-minute buckets hold
-# at least one ring event. Below it there is not enough to stage a night.
+# at least one pulse reading. Below it there is not enough to stage a night.
 MIN_COVERED_FRACTION = 0.5
 BUCKET_SECONDS = 300
+# The ring only produces these on a finger — they are photoplethysmography,
+# so no finger means no signal. Everything else it logs regardless.
+PULSE_TAGS = {0x60, 0x80, 0x6E}
+# Off the finger the ring still runs, logging temperature about once a minute
+# along with debug and BLE chatter. That is what separates "you took it off"
+# from "we never collected this": the first leaves a trace, the second is
+# silent. Below this share of buckets holding *any* event, assume the latter.
+MIN_PRESENT_FRACTION = 0.5
 # The ring stops recording while charging, so short holes are ordinary. Only
 # report gaps long enough to swallow a night.
 GAP_HOURS = 6.0
@@ -71,6 +79,11 @@ def coverage_report(db: Session) -> Dict[str, Any]:
     # Bucket occupancy, so a session's coverage is a share of its span rather
     # than a raw count — a thousand events in one minute is not a covered night.
     occupied = {int(to_unix(t, offset) // BUCKET_SECONDS) for t in stamps}
+    pulsing = {
+        int(to_unix(t, offset) // BUCKET_SECONDS)
+        for t, tag in db.query(RingEventRaw.timestamp, RingEventRaw.tag).all()
+        if tag in PULSE_TAGS
+    }
 
     sessions: List[Dict[str, Any]] = []
     for session in (
@@ -85,9 +98,20 @@ def coverage_report(db: Session) -> Dict[str, Any]:
         first = int(start.timestamp() // BUCKET_SECONDS)
         last = int(end.timestamp() // BUCKET_SECONDS)
         total = max(last - first, 1)
-        held = sum(1 for bucket in range(first, last) if bucket in occupied)
-        fraction = round(held / total, 3)
+        buckets = range(first, last)
+        fraction = round(sum(1 for b in buckets if b in pulsing) / total, 3)
+        present = round(sum(1 for b in buckets if b in occupied) / total, 3)
         labels = len(session.sleep_phase_5_min)
+
+        if fraction >= MIN_COVERED_FRACTION:
+            state = "covered"
+        elif present >= MIN_PRESENT_FRACTION:
+            # The ring was there and logging, just not on a finger. Nothing to
+            # collect and nothing to fix, so this is not a failure.
+            state = "not_worn"
+        else:
+            state = "missing"
+
         sessions.append(
             {
                 "day": str(session.day),
@@ -95,7 +119,9 @@ def coverage_report(db: Session) -> Dict[str, Any]:
                 "end": end.isoformat(),
                 "labels": labels,
                 "covered_fraction": fraction,
-                "covered": fraction >= MIN_COVERED_FRACTION,
+                "present_fraction": present,
+                "state": state,
+                "covered": state == "covered",
                 "counted": labels >= MIN_LABELS_FOR_A_NIGHT,
             }
         )
@@ -114,19 +140,22 @@ def coverage_report(db: Session) -> Dict[str, Any]:
     gaps.sort(key=lambda g: -g["hours"])
 
     counted = [s for s in sessions if s["counted"]]
-    missing = [s for s in counted if not s["covered"]]
+    missing = [s for s in counted if s["state"] == "missing"]
+    unworn = [s for s in counted if s["state"] == "not_worn"]
+    tail = f" ({len(unworn)} not worn)" if unworn else ""
     return {
         "status": "gaps" if missing else "ok",
         "message": (
-            f"{len(missing)} of {len(counted)} scored nights have no ring data"
+            f"{len(missing)} of {len(counted)} scored nights have no ring data{tail}"
             if missing
-            else f"all {len(counted)} scored nights are covered"
+            else f"all {len(counted)} scored nights accounted for{tail}"
         ),
         "from": _stamp(to_unix(stamps[0], offset)),
         "to": _stamp(to_unix(stamps[-1], offset)),
         "events": len(stamps),
         "sessions": sessions,
         "missing_sessions": [s["day"] for s in missing],
+        "unworn_sessions": [s["day"] for s in unworn],
         "gaps": gaps[:10],
         "largest_gap_hours": gaps[0]["hours"] if gaps else 0.0,
     }
@@ -144,7 +173,7 @@ def resume_cursor_for_gaps(db: Session, report: Dict[str, Any]) -> Optional[int]
     earliest = min(
         datetime.fromisoformat(s["start"])
         for s in report["sessions"]
-        if s.get("counted") and not s["covered"]
+        if s.get("counted") and s.get("state") == "missing"
     )
     return to_ring_ds(earliest, offset)
 
@@ -171,16 +200,14 @@ def main(argv: Optional[List[str]] = None) -> int:
                 "  %d events, %s → %s", report["events"], report["from"], report["to"]
             )
         for session in report.get("sessions", []):
-            if not session["counted"]:
-                mark = "nap"
-            elif session["covered"]:
-                mark = "ok"
-            else:
-                mark = "MISS"
+            mark = "nap" if not session["counted"] else {
+                "covered": "ok", "not_worn": "off", "missing": "MISS",
+            }[session["state"]]
             logger.info(
-                "  %s %-5s %3d labels  coverage %5.1f%%",
+                "  %s %-5s %3d labels  pulse %5.1f%%  any %5.1f%%",
                 session["day"], mark, session["labels"],
                 session["covered_fraction"] * 100,
+                session["present_fraction"] * 100,
             )
         for gap in report.get("gaps", []):
             logger.info("  gap %5.1f h  %s → %s", gap["hours"], gap["from"], gap["to"])
