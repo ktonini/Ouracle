@@ -3,6 +3,7 @@ import ipaddress
 import logging
 import os
 import secrets
+from statistics import median
 from datetime import date, datetime, time, timedelta, timezone
 from typing import Any, Dict, List, Optional
 
@@ -1131,11 +1132,17 @@ class RingNightResponse(BaseModel):
     lowest_hr: Optional[int] = None
     average_hr: Optional[int] = None
     event_count: int = 0
+    # Breaths per minute, derived from the beat intervals. Validated against
+    # Oura's own per-night figure to 0.39 breaths/min over ten nights.
+    breath_rate: Optional[float] = None
     detected_bedtimes: List[Dict[str, Any]] = Field(default_factory=list)
     coverage: Optional[Dict[str, Any]] = None
     # Locally derived; see ring_events.staging for the method and its limits.
     stages: List[Dict[str, Any]] = Field(default_factory=list)
     stage_summary: Optional[Dict[str, Any]] = None
+    # Set when the night cannot be assembled at all — no ring events yet, or
+    # none carrying the clock. An empty night is an answer, not a server error.
+    error: Optional[str] = None
 
 
 @mobile_client_router.get("/api/mobile/ring-night/{day}", response_model=RingNightResponse)
@@ -1167,6 +1174,22 @@ def ring_night(
     from ..ring_events.staging import build_epochs, stage_epochs, summarise
 
     night = build_night(db, start, end)
+    if night.get("error"):
+        return RingNightResponse(
+            start=start.replace(tzinfo=timezone.utc),
+            end=end.replace(tzinfo=timezone.utc),
+            error=night["error"],
+            coverage=coverage(db),
+        )
+
+    rates = [
+        f["breath_rate"]
+        for f in (night.get("ibi_features") or {}).values()
+        if f.get("breath_rate") is not None
+    ]
+    # Median across the night: a bucket whose peak detection went astray should
+    # not move the figure the way a mean would.
+    night["breath_rate"] = round(median(rates), 1) if len(rates) >= 5 else None
     night["detected_bedtimes"] = detected_bedtimes(db)
     night["coverage"] = coverage(db)
 
