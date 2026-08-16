@@ -24,6 +24,18 @@ from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 STAGES = ["deep", "light", "rem", "awake"]
 
+# How much per-epoch evidence counts against the transition prior when decoding
+# a night. A forest averages many leaf distributions, so its probabilities come
+# out flat rather than as calibrated likelihoods — at 1.0 the prior overwhelms
+# them and every night collapses toward the commonest stage.
+#
+# Chosen by sweeping leave-one-night-out over ten nights: 1.0 scored 0.50
+# balanced, 4.0 scored 0.71, 12.0 scored 0.70. It is a broad plateau (3-8 all
+# land within a point), not a knife edge, but it was picked on the same
+# cross-validation reported elsewhere, so treat that number as mildly
+# optimistic.
+DEFAULT_EMISSION_WEIGHT = 4.0
+
 # Raw per-epoch signals, as they arrive from the ring.
 RAW_FEATURES = [
     "heart_rate",
@@ -275,11 +287,7 @@ class Forest:
     # which case decoding falls back to per-epoch argmax.
     transitions: Optional[List[List[float]]] = None
     initial: Optional[List[float]] = None
-    # How much the per-epoch evidence counts against the transition prior. A
-    # forest averages many leaf distributions, so its probabilities are flat
-    # rather than calibrated likelihoods; at 1.0 the prior simply overwhelms
-    # them and every night collapses toward the commonest stage.
-    emission_weight: float = 1.0
+    emission_weight: float = DEFAULT_EMISSION_WEIGHT
 
     def to_json(self) -> Dict[str, Any]:
         return {
@@ -302,7 +310,7 @@ class Forest:
             stages=blob["stages"],
             transitions=blob.get("transitions"),
             initial=blob.get("initial"),
-            emission_weight=blob.get("emission_weight", 1.0),
+            emission_weight=blob.get("emission_weight", DEFAULT_EMISSION_WEIGHT),
         )
 
     def decode(
@@ -401,6 +409,7 @@ def fit(
     labels: List[str],
     sequences: Optional[List[List[str]]] = None,
     trees: int = 60,
+    emission_weight: float = DEFAULT_EMISSION_WEIGHT,
     max_depth: int = 5,
     min_leaf: int = 8,
     seed: int = 20260814,
@@ -434,7 +443,7 @@ def fit(
     weights = [weight_for[label] for label in encoded]
 
     per_split = max(2, int(math.sqrt(len(FEATURES))))
-    forest = Forest(medians=medians)
+    forest = Forest(medians=medians, emission_weight=emission_weight)
     if sequences:
         forest.transitions, forest.initial = learn_transitions(sequences)
     for _ in range(trees):

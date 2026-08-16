@@ -237,3 +237,38 @@ def test_transitions_survive_json():
     assert revived.initial == forest.initial
     features = featurise_night(rows)
     assert revived.decode(features) == forest.decode(features)
+
+
+def test_emission_weight_is_persisted_and_applied():
+    """At 1.0 the transition prior swamps the evidence — that is what made
+    sequence decoding score worse than classifying epochs alone."""
+    from backend.src.ring_events.model import (
+        DEFAULT_EMISSION_WEIGHT, STAGES, Forest, learn_transitions,
+    )
+
+    deep, rem = STAGES.index("deep"), STAGES.index("rem")
+    emissions = []
+    for i in range(9):
+        vector = [0.02] * len(STAGES)
+        vector[rem if i == 4 else deep] = 0.55 if i == 4 else 0.94
+        if i == 4:
+            vector[deep] = 0.39
+        emissions.append(vector)
+
+    forest = Forest(stages=list(STAGES))
+    forest.transitions, forest.initial = learn_transitions([["deep"] * 40])
+    forest.predict_proba = lambda features: emissions[features["i"]]
+    sequence = [{"i": i} for i in range(9)]
+
+    # Heavier weighting lets strong evidence speak; the default suppresses a
+    # lone weak vote.
+    assert [s for s, _ in forest.decode(sequence, emission_weight=1.0)][4] == "deep"
+    assert [s for s, _ in forest.decode(sequence, emission_weight=40.0)][4] == "rem"
+
+    forest.emission_weight = 7.5
+    revived = Forest.from_json(json.loads(json.dumps(forest.to_json())))
+    assert revived.emission_weight == 7.5
+    # A model saved before this existed decodes with the tuned default.
+    blob = forest.to_json()
+    del blob["emission_weight"]
+    assert Forest.from_json(blob).emission_weight == DEFAULT_EMISSION_WEIGHT
