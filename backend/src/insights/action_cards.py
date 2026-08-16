@@ -79,9 +79,12 @@ def _primary_session(db: Session, day: date) -> Optional[SleepSession]:
     return max(sessions, key=lambda s: s.total_sleep_duration or 0)
 
 
-def build_action_cards(db: Session, day: date) -> List[ActionCard]:
+def build_action_cards(
+    db: Session, day: date, today: Optional[date] = None
+) -> List[ActionCard]:
     """Evaluate all rules for ``day`` and return ordered ``ActionCard`` list."""
 
+    today = today or date.today()
     cards: List[ActionCard] = []
     day_str = day.isoformat()
 
@@ -258,7 +261,10 @@ def build_action_cards(db: Session, day: date) -> List[ActionCard]:
     if sleep is None: missing.append("sleep")
     if activity is None: missing.append("activity")
     if readiness is None: missing.append("readiness")
-    if missing and latest is not None and day <= latest:
+    # Never for today. A day still in progress has nothing missing — the night
+    # may not have happened yet, let alone been scored — and warning about it
+    # turns every morning into a fault report.
+    if missing and latest is not None and day < today and day <= latest:
         cards.append(ActionCard(
             id=f"data-missing-{day_str}", day=day_str, severity="info",
             category="data", title="Some metrics were not exported for this day",
