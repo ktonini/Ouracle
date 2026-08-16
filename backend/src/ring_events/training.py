@@ -218,22 +218,29 @@ def cross_validate(
     for held_out in nights:
         train_samples: List[Dict[str, Any]] = []
         train_labels: List[str] = []
+        sequences: List[List[str]] = []
         for day, rows in nights.items():
             if day == held_out:
                 continue
+            night_labels = [row["label"] for row in rows]
+            sequences.append(night_labels)
             for features, row in zip(featurise_night(rows), rows):
                 train_samples.append(features)
                 train_labels.append(row["label"])
         if not train_samples:
             continue
 
-        forest = fit(train_samples, train_labels)
+        forest = fit(train_samples, train_labels, sequences=sequences)
         most_common = max(set(train_labels), key=train_labels.count)
 
         rows = nights[held_out]
-        for features, row in zip(featurise_night(rows), rows):
+        features = featurise_night(rows)
+        # Decode the night as a sequence: the held-out night's own labels are
+        # never seen, only the transition structure of the training nights.
+        decoded = forest.decode(features)
+        for row, (stage, _) in zip(rows, decoded):
             actual.append(row["label"])
-            predicted.append(forest.predict(features))
+            predicted.append(stage)
             majority.append(most_common)
 
     return {
@@ -265,7 +272,9 @@ def train_model(
     nights = _by_night(rows)
     samples: List[Dict[str, Any]] = []
     labels: List[str] = []
+    sequences: List[List[str]] = []
     for night_rows in nights.values():
+        sequences.append([row["label"] for row in night_rows])
         for features, row in zip(featurise_night(night_rows), night_rows):
             samples.append(features)
             labels.append(row["label"])
@@ -300,7 +309,7 @@ def train_model(
                 "scores": scores,
             }
 
-    forest = fit(samples, labels)
+    forest = fit(samples, labels, sequences=sequences)
     blob = forest.to_json()
     blob["meta"] = {
         "trained_at": datetime.now(timezone.utc).isoformat(),

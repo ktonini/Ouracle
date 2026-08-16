@@ -2,6 +2,8 @@
 
 import json
 
+import pytest
+
 from backend.src.ring_events.model import Forest, FEATURES, featurise_night, fit
 
 
@@ -135,3 +137,103 @@ def test_a_corrupt_model_falls_back_instead_of_failing(tmp_path, monkeypatch):
     (tmp_path / "sleep_model.json").write_text("not json")
     monkeypatch.setattr(staging, "_MODEL_CACHE", (None, None))
     assert staging.load_model() is None
+
+
+def test_transitions_capture_run_structure():
+    from backend.src.ring_events.model import STAGES, learn_transitions
+
+    # Long runs of each stage, never REM straight into deep.
+    sequences = [["deep"] * 20 + ["light"] * 20 + ["rem"] * 20 + ["light"] * 20]
+    transitions, initial = learn_transitions(sequences)
+    deep, light, rem = (STAGES.index(s) for s in ("deep", "light", "rem"))
+
+    # Staying put is far likelier than moving.
+    assert transitions[deep][deep] > transitions[deep][light]
+    assert transitions[light][light] > transitions[light][rem]
+    # Unseen transitions are rare, not impossible — a handful of nights is not
+    # proof something can never happen — but rarer than anything observed.
+    assert 0 < transitions[rem][deep] < transitions[rem][light]
+    assert transitions[rem][deep] < transitions[rem][rem]
+    assert sum(initial) == pytest.approx(1.0)
+    for row in transitions:
+        assert sum(row) == pytest.approx(1.0)
+
+
+def test_decoding_overrules_a_lone_implausible_epoch():
+    """The point of decoding: one epoch that weakly looks like REM inside a
+    confident deep run is far likelier to be a misread than a real visit."""
+    from backend.src.ring_events.model import STAGES, Forest, learn_transitions
+
+    deep, rem = STAGES.index("deep"), STAGES.index("rem")
+    emissions = []
+    for i in range(9):
+        vector = [0.02] * len(STAGES)
+        if i == 4:
+            vector[rem] = 0.55   # a weak, isolated vote for REM
+            vector[deep] = 0.39
+        else:
+            vector[deep] = 0.94
+        emissions.append(vector)
+
+    forest = Forest(stages=list(STAGES))
+    forest.transitions, forest.initial = learn_transitions([["deep"] * 40])
+    forest.predict_proba = lambda features: emissions[features["i"]]
+
+    sequence = [{"i": i} for i in range(9)]
+    decoded = [stage for stage, _ in forest.decode(sequence)]
+    assert decoded == ["deep"] * 9
+
+    # Without the transition structure it takes the bait.
+    forest.transitions = forest.initial = None
+    assert [stage for stage, _ in forest.decode(sequence)][4] == "rem"
+
+
+def test_decoding_still_follows_strong_evidence():
+    """It must not flatten everything into one stage — a sustained, confident
+    run of another stage has to come through."""
+    from backend.src.ring_events.model import STAGES, Forest, learn_transitions
+
+    deep, rem = STAGES.index("deep"), STAGES.index("rem")
+    emissions = []
+    for i in range(12):
+        vector = [0.02] * len(STAGES)
+        vector[rem if 4 <= i < 9 else deep] = 0.94
+        emissions.append(vector)
+
+    forest = Forest(stages=list(STAGES))
+    forest.transitions, forest.initial = learn_transitions(
+        [["deep"] * 20 + ["rem"] * 20]
+    )
+    forest.predict_proba = lambda features: emissions[features["i"]]
+
+    decoded = [stage for stage, _ in forest.decode([{"i": i} for i in range(12)])]
+    assert decoded[:4] == ["deep"] * 4
+    assert decoded[4:9] == ["rem"] * 5
+    assert decoded[9:] == ["deep"] * 3
+
+
+def test_decode_falls_back_when_a_model_has_no_transitions():
+    """A model fitted before sequence decoding existed must still work."""
+    rows, labels = _night()
+    forest = fit(featurise_night(rows), labels, trees=10)
+    assert forest.transitions is None
+    decoded = forest.decode(featurise_night(rows))
+    argmax = [forest.predict(f) for f in featurise_night(rows)]
+    assert [stage for stage, _ in decoded] == argmax
+
+
+def test_decode_handles_an_empty_night():
+    rows, labels = _night()
+    forest = fit(featurise_night(rows), labels, trees=10)
+    assert forest.decode([]) == []
+
+
+def test_transitions_survive_json():
+    rows, labels = _night()
+    forest = fit(featurise_night(rows), labels, sequences=[labels], trees=10)
+    assert forest.transitions is not None
+    revived = Forest.from_json(json.loads(json.dumps(forest.to_json())))
+    assert revived.transitions == forest.transitions
+    assert revived.initial == forest.initial
+    features = featurise_night(rows)
+    assert revived.decode(features) == forest.decode(features)

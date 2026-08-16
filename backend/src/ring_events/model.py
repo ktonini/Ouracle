@@ -234,6 +234,35 @@ def _grow(
     )
 
 
+def learn_transitions(
+    sequences: List[List[str]], smoothing: float = 1.0
+) -> Tuple[List[List[float]], List[float]]:
+    """Stage-to-stage probabilities and a starting distribution.
+
+    Sleep is strongly sequential — three quarters of epochs continue the
+    previous stage, and REM never runs straight into deep. Classifying each
+    epoch alone throws that away.
+
+    Smoothed, so a transition unseen in a handful of nights is treated as rare
+    rather than impossible.
+    """
+    size = len(STAGES)
+    index_of = {stage: i for i, stage in enumerate(STAGES)}
+    counts = [[smoothing] * size for _ in range(size)]
+    starts = [smoothing] * size
+
+    for labels in sequences:
+        if not labels:
+            continue
+        starts[index_of[labels[0]]] += 1
+        for a, b in zip(labels, labels[1:]):
+            counts[index_of[a]][index_of[b]] += 1
+
+    transitions = [[c / sum(row) for c in row] for row in counts]
+    initial = [c / sum(starts) for c in starts]
+    return transitions, initial
+
+
 @dataclass
 class Forest:
     """Bagged shallow trees, with per-feature medians for missing values."""
@@ -242,13 +271,19 @@ class Forest:
     medians: List[float] = field(default_factory=list)
     features: List[str] = field(default_factory=lambda: list(FEATURES))
     stages: List[str] = field(default_factory=lambda: list(STAGES))
+    # Sequence structure. Absent on a model fitted before this existed, in
+    # which case decoding falls back to per-epoch argmax.
+    transitions: Optional[List[List[float]]] = None
+    initial: Optional[List[float]] = None
 
     def to_json(self) -> Dict[str, Any]:
         return {
-            "version": 1,
+            "version": 2,
             "features": self.features,
             "stages": self.stages,
             "medians": self.medians,
+            "transitions": self.transitions,
+            "initial": self.initial,
             "trees": [tree.to_json() for tree in self.trees],
         }
 
@@ -259,7 +294,66 @@ class Forest:
             medians=blob["medians"],
             features=blob["features"],
             stages=blob["stages"],
+            transitions=blob.get("transitions"),
+            initial=blob.get("initial"),
         )
+
+    def decode(
+        self, sequence: List[Dict[str, Optional[float]]]
+    ) -> List[Tuple[str, float]]:
+        """The most likely *sequence* of stages, not the most likely stage at
+        each epoch independently.
+
+        Viterbi over the forest's per-epoch probabilities. Those are used
+        directly as emission likelihoods: the fit weights classes equally, so
+        its effective prior is uniform and posterior is proportional to
+        likelihood.
+
+        Returns (stage, confidence) per epoch, where confidence stays the
+        forest's own vote share — the decode changes which stage is chosen, not
+        how sure the evidence was.
+        """
+        probabilities = [self.predict_proba(f) for f in sequence]
+        if not probabilities:
+            return []
+        if not self.transitions or not self.initial:
+            return [
+                (self.stages[p.index(max(p))], round(max(p), 2))
+                for p in probabilities
+            ]
+
+        size = len(self.stages)
+        floor = 1e-9  # a zero-probability stage must not poison the whole path
+
+        def log(x: float) -> float:
+            return math.log(max(x, floor))
+
+        score = [log(self.initial[s]) + log(probabilities[0][s]) for s in range(size)]
+        back: List[List[int]] = []
+        for step in range(1, len(probabilities)):
+            previous, score = score, [0.0] * size
+            choice = [0] * size
+            for current in range(size):
+                best, best_from = None, 0
+                for prior in range(size):
+                    value = previous[prior] + log(self.transitions[prior][current])
+                    if best is None or value > best:
+                        best, best_from = value, prior
+                score[current] = best + log(probabilities[step][current])
+                choice[current] = best_from
+            back.append(choice)
+
+        last = max(range(size), key=lambda s: score[s])
+        path = [last]
+        for choice in reversed(back):
+            last = choice[last]
+            path.append(last)
+        path.reverse()
+
+        return [
+            (self.stages[s], round(probabilities[i][s], 2))
+            for i, s in enumerate(path)
+        ]
 
     def _row(self, features: Dict[str, Optional[float]]) -> List[float]:
         return [
@@ -292,6 +386,7 @@ class Forest:
 def fit(
     samples: List[Dict[str, Optional[float]]],
     labels: List[str],
+    sequences: Optional[List[List[str]]] = None,
     trees: int = 60,
     max_depth: int = 5,
     min_leaf: int = 8,
@@ -327,6 +422,8 @@ def fit(
 
     per_split = max(2, int(math.sqrt(len(FEATURES))))
     forest = Forest(medians=medians)
+    if sequences:
+        forest.transitions, forest.initial = learn_transitions(sequences)
     for _ in range(trees):
         picks = [rng.randrange(len(rows)) for _ in range(len(rows))]  # bootstrap
         candidates = rng.sample(range(len(FEATURES)), per_split)

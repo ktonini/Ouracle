@@ -119,16 +119,16 @@ def _stage_with_model(epochs: List[Epoch], forest) -> List[Dict[str, Any]]:
         }
         for e in epochs
     ]
+    # Decoded as a sequence rather than epoch by epoch: sleep runs in stretches,
+    # and three quarters of epochs continue the previous stage.
     staged: List[Dict[str, Any]] = []
-    for epoch, features in zip(epochs, featurise_night(rows)):
-        proba = forest.predict_proba(features)
-        best = max(range(len(proba)), key=lambda i: proba[i])
+    for epoch, (stage, confidence) in zip(epochs, forest.decode(featurise_night(rows))):
         staged.append(
             {
                 "t": epoch.start.isoformat(),
-                "stage": forest.stages[best],
+                "stage": stage,
                 # The forest's own vote share, so a marginal call reads as one.
-                "confidence": round(proba[best], 2),
+                "confidence": confidence,
                 "heart_rate": (
                     round(epoch.heart_rate, 1) if epoch.heart_rate is not None else None
                 ),
@@ -153,7 +153,11 @@ def stage_epochs(epochs: List[Epoch], use_model: bool = True) -> List[Dict[str, 
     if use_model and epochs:
         forest = load_model()
         if forest is not None:
-            return _smooth(_stage_with_model(epochs, forest))
+            staged = _stage_with_model(epochs, forest)
+            # The flicker filter exists to impose run-length structure the
+            # per-epoch rules lack. A decoded sequence already has it, and
+            # smoothing on top would overrule the transition model.
+            return staged if forest.transitions else _smooth(staged)
 
     movements = [e.movement for e in epochs if e.movement is not None]
     rates = [e.heart_rate for e in epochs if e.heart_rate is not None]
