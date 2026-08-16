@@ -127,6 +127,14 @@ struct OuracleClient {
         )
     }
 
+    /// Nightly ring figures across a window, beside the cloud's.
+    func ringTrends(days: Int = 30) async throws -> RingTrends {
+        try await get(
+            "api/mobile/ring-trends",
+            query: [URLQueryItem(name: "days", value: String(days))]
+        )
+    }
+
     /// Whether every night Oura scored actually has ring data behind it.
     func ringCoverage() async throws -> RingCoverage {
         try await get("api/mobile/ring-coverage")

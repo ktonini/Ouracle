@@ -298,6 +298,53 @@ struct RingCoverage: Codable, Equatable {
     }
 }
 
+/// Our nightly figures beside Oura's. Both on the same axes is a standing
+/// check: the SpO2 calibration and the staging model are refitted nightly, so
+/// a divergence here is the first sign one of them has wandered.
+struct RingTrends: Codable, Equatable {
+    struct Figures: Codable, Equatable {
+        let deepMinutes: Int?
+        let remMinutes: Int?
+        let asleepMinutes: Int?
+        let breathRate: Double?
+        let spo2Percent: Double?
+        let desaturationIndex: Double?
+        let lowestHr: Double?
+
+        enum CodingKeys: String, CodingKey {
+            case deepMinutes = "deep_minutes"
+            case remMinutes = "rem_minutes"
+            case asleepMinutes = "asleep_minutes"
+            case breathRate = "breath_rate"
+            case spo2Percent = "spo2_percent"
+            case desaturationIndex = "desaturation_index"
+            case lowestHr = "lowest_hr"
+        }
+    }
+
+    struct Night: Codable, Equatable, Identifiable {
+        let day: String
+        let ours: Figures
+        let theirs: Figures
+        var id: String { day }
+    }
+
+    struct Agreement: Codable, Equatable {
+        let nights: Int
+        let meanAbsDifference: Double
+        let bias: Double
+
+        enum CodingKeys: String, CodingKey {
+            case nights
+            case meanAbsDifference = "mean_abs_difference"
+            case bias
+        }
+    }
+
+    let nights: [Night]
+    let agreement: [String: Agreement]
+}
+
 struct RingNight: Codable, Equatable {
     struct Point: Codable, Equatable, Identifiable {
         let t: String

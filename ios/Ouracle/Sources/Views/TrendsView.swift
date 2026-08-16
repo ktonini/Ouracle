@@ -6,6 +6,8 @@ struct TrendsView: View {
     @EnvironmentObject var store: AppStore
     @State private var metric: TrendMetric = .sleepScore
     @State private var window: Int = 30
+    @State private var ringMetric: RingTrendMetric = .breathRate
+    @State private var ringTrends: RingTrends?
 
     var body: some View {
         NavigationStack {
@@ -32,14 +34,25 @@ struct TrendsView: View {
                     )
                     .frame(maxHeight: .infinity)
                 } else {
-                    chart
-                    summary
-                    Spacer()
+                    ScrollView {
+                        VStack(alignment: .leading, spacing: 16) {
+                            chart
+                            summary
+                            if let ringTrends, !ringTrends.nights.isEmpty {
+                                Divider().padding(.vertical, 4)
+                                ringSection(ringTrends)
+                            }
+                        }
+                    }
                 }
             }
             .padding()
             .navigationTitle("Trends")
-            .refreshable { await store.refresh() }
+            .task(id: window) { await loadRingTrends() }
+            .refreshable {
+                await store.refresh()
+                await loadRingTrends()
+            }
         }
     }
 
@@ -85,6 +98,75 @@ struct TrendsView: View {
                 summaryStat("Best", metric.format(metric.lowerIsBetter ? values.min()! : values.max()!))
             }
         }
+    }
+
+    private func loadRingTrends() async {
+        ringTrends = try? await store.client?.ringTrends(days: window)
+    }
+
+    /// Our figures and Oura's on one pair of axes. Seeing them diverge is the
+    /// point: both the staging model and the SpO2 calibration are refitted
+    /// nightly, and a drift shows here first.
+    @ViewBuilder
+    private func ringSection(_ trends: RingTrends) -> some View {
+        let formatter = DateFormatter()
+        let _ = formatter.dateFormat = "yyyy-MM-dd"
+
+        Text("From the ring")
+            .font(.headline)
+
+        Picker("Ring metric", selection: $ringMetric) {
+            ForEach(RingTrendMetric.allCases) { option in
+                Text(option.label).tag(option)
+            }
+        }
+        .pickerStyle(.menu)
+
+        Chart {
+            ForEach(trends.nights) { night in
+                if let date = formatter.date(from: night.day) {
+                    if let value = ringMetric.value(night.ours) {
+                        LineMark(x: .value("Day", date), y: .value("Value", value))
+                            .foregroundStyle(by: .value("Source", "Ring"))
+                            .interpolationMethod(.monotone)
+                    }
+                    if let value = ringMetric.value(night.theirs) {
+                        LineMark(x: .value("Day", date), y: .value("Value", value))
+                            .foregroundStyle(by: .value("Source", "Oura"))
+                            .interpolationMethod(.monotone)
+                    }
+                }
+            }
+        }
+        .chartForegroundStyleScale(["Ring": Color.teal, "Oura": Color.secondary])
+        .chartYScale(domain: .automatic(includesZero: false))
+        .frame(height: 220)
+
+        if let match = trends.agreement[ringMetric.key] {
+            Text(agreementSentence(match, metric: ringMetric))
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+        } else {
+            Text("No night yet has both figures for this metric.")
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+        }
+    }
+
+    /// Plain prose rather than a bare number: "0.29" means nothing without
+    /// knowing what it is 0.29 of, or which way it leans.
+    private func agreementSentence(
+        _ match: RingTrends.Agreement, metric: RingTrendMetric
+    ) -> String {
+        let gap = String(
+            format: "Over %d nights the two differ by %.2f %@ on average",
+            match.nights, match.meanAbsDifference, metric.unit
+        )
+        guard abs(match.bias) >= 0.05 else { return gap + ", with no consistent lean." }
+        return gap + String(
+            format: ", and the ring reads %@ by %.2f.",
+            match.bias > 0 ? "high" : "low", abs(match.bias)
+        )
     }
 
     private func summaryStat(_ label: String, _ value: String) -> some View {
@@ -156,6 +238,55 @@ enum TrendMetric: String, CaseIterable, Identifiable {
         case .totalSleep: return String(format: "%.1fh", value)
         case .temperature: return String(format: "%+.2f°", value)
         default: return String(format: "%.0f", value)
+        }
+    }
+}
+
+
+/// Metrics the ring produces itself, each with an Oura counterpart to compare
+/// against.
+enum RingTrendMetric: String, CaseIterable, Identifiable {
+    case breathRate, spo2, deepMinutes, remMinutes, desaturationIndex
+
+    var id: String { rawValue }
+
+    var label: String {
+        switch self {
+        case .breathRate: return "Breathing rate"
+        case .spo2: return "Blood oxygen"
+        case .deepMinutes: return "Deep sleep"
+        case .remMinutes: return "REM sleep"
+        case .desaturationIndex: return "Dips per hour"
+        }
+    }
+
+    /// Matches the server's agreement keys.
+    var key: String {
+        switch self {
+        case .breathRate: return "breath_rate"
+        case .spo2: return "spo2_percent"
+        case .deepMinutes: return "deep_minutes"
+        case .remMinutes: return "rem_minutes"
+        case .desaturationIndex: return "desaturation_index"
+        }
+    }
+
+    var unit: String {
+        switch self {
+        case .breathRate: return "breaths/min"
+        case .spo2: return "%"
+        case .deepMinutes, .remMinutes: return "minutes"
+        case .desaturationIndex: return "dips/hour"
+        }
+    }
+
+    func value(_ figures: RingTrends.Figures) -> Double? {
+        switch self {
+        case .breathRate: return figures.breathRate
+        case .spo2: return figures.spo2Percent
+        case .deepMinutes: return figures.deepMinutes.map(Double.init)
+        case .remMinutes: return figures.remMinutes.map(Double.init)
+        case .desaturationIndex: return figures.desaturationIndex
         }
     }
 }

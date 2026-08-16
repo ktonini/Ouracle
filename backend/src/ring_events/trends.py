@@ -14,13 +14,15 @@ shows up here rather than waiting for someone to run a script.
 from __future__ import annotations
 
 import logging
-from datetime import date, timedelta
+import json
+from datetime import date, datetime, timedelta, timezone
 from statistics import median
 from typing import Any, Dict, List, Optional
 
 from sqlalchemy.orm import Session
 
-from ..models import Sleep, SleepSession
+from ..models import IngestState, RingEventRaw, Sleep, SleepSession
+from ..paths import get_user_data_dir
 from .night import build_night
 from .spo2 import desaturations, estimate, ratios_between, series
 from .staging import build_epochs, stage_epochs, summarise
@@ -29,6 +31,7 @@ logger = logging.getLogger("RingTrends")
 
 # Each night costs a scan of its events plus staging, so this is bounded.
 MAX_NIGHTS = 90
+CACHE_PREFIX = "ring_trends:"
 
 
 def _primary_sessions(db: Session, days: int) -> List[SleepSession]:
@@ -114,18 +117,83 @@ def _theirs(db: Session, session: SleepSession) -> Dict[str, Any]:
     }
 
 
-def nightly_summaries(db: Session, days: int = 30) -> List[Dict[str, Any]]:
-    """Both views of every scored night in the window, oldest first."""
+def _fingerprint(db: Session, session: SleepSession) -> str:
+    """What a night's summary depends on.
+
+    The events themselves, and the two things refitted nightly. Any of them
+    moving means the cached answer is stale; none of them moving means a past
+    night cannot have changed.
+    """
+    from .night import ring_clock_offset, to_ring_ds
+
+    offset = ring_clock_offset(db)
+    count = 0
+    if offset is not None:
+        count = (
+            db.query(RingEventRaw)
+            .filter(
+                RingEventRaw.timestamp >= to_ring_ds(session.bedtime_start, offset),
+                RingEventRaw.timestamp <= to_ring_ds(session.bedtime_end, offset),
+            )
+            .count()
+        )
+
+    stamps = []
+    for name in ("sleep_model.json", "spo2_calibration.json"):
+        path = get_user_data_dir() / name
+        try:
+            stamps.append(str(int(path.stat().st_mtime)))
+        except OSError:
+            stamps.append("-")
+    return f"{count}:{':'.join(stamps)}"
+
+
+def nightly_summaries(
+    db: Session, days: int = 30, use_cache: bool = True
+) -> List[Dict[str, Any]]:
+    """Both views of every scored night in the window, oldest first.
+
+    Each night costs several passes over its events, so a long window was slow
+    enough to be unusable — 90 days took the better part of a minute. Past
+    nights are cached against a fingerprint of what they depend on.
+    """
     days = max(1, min(days, MAX_NIGHTS))
     out: List[Dict[str, Any]] = []
+    dirty = False
+
     for session in _primary_sessions(db, days):
-        out.append(
-            {
+        key = CACHE_PREFIX + str(session.day)
+        fingerprint = _fingerprint(db, session) if use_cache else ""
+        row: Optional[Dict[str, Any]] = None
+
+        if use_cache:
+            cached = db.get(IngestState, key)
+            if cached and cached.value:
+                try:
+                    blob = json.loads(cached.value)
+                    if blob.get("fingerprint") == fingerprint:
+                        row = blob["row"]
+                except (ValueError, KeyError):
+                    row = None
+
+        if row is None:
+            row = {
                 "day": str(session.day),
                 "ours": _ours(db, session),
                 "theirs": _theirs(db, session),
             }
-        )
+            if use_cache:
+                state = db.get(IngestState, key)
+                if state is None:
+                    state = IngestState(key=key)
+                    db.add(state)
+                state.value = json.dumps({"fingerprint": fingerprint, "row": row})
+                state.updated_at = datetime.now(timezone.utc).replace(tzinfo=None)
+                dirty = True
+        out.append(row)
+
+    if dirty:
+        db.commit()
     return out
 
 

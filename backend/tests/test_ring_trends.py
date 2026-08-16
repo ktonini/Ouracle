@@ -115,3 +115,49 @@ def test_agreement_measures_only_nights_that_have_both():
 
 def test_agreement_omits_a_metric_neither_side_has():
     assert agreement([{"day": "a", "ours": {}, "theirs": {}}]) == {}
+
+
+def test_a_night_is_computed_once_and_then_cached(db_session, monkeypatch):
+    """Several passes over a night's events made a long window unusable."""
+    from backend.src.ring_events import trends
+
+    day = date.today() - timedelta(days=1)
+    start = _session(db_session, day)
+    _beats(db_session, start)
+
+    calls = {"n": 0}
+    real = trends._ours
+
+    def counted(db, session):
+        calls["n"] += 1
+        return real(db, session)
+
+    monkeypatch.setattr(trends, "_ours", counted)
+
+    first = trends.nightly_summaries(db_session, days=7)
+    second = trends.nightly_summaries(db_session, days=7)
+    assert calls["n"] == 1
+    assert first == second
+
+
+def test_new_events_for_a_night_invalidate_its_cache(db_session, monkeypatch):
+    """A night recovered by the rewind must not keep serving the empty answer
+    it gave before the data arrived."""
+    from backend.src.ring_events import trends
+
+    day = date.today() - timedelta(days=1)
+    start = _session(db_session, day)
+    assert trends.nightly_summaries(db_session, days=7)[0]["ours"] == {}
+
+    _beats(db_session, start)
+    refreshed = trends.nightly_summaries(db_session, days=7)[0]
+    assert refreshed["ours"]["average_hr"] == 60
+
+
+def test_cache_can_be_bypassed(db_session):
+    from backend.src.ring_events import trends
+
+    day = date.today() - timedelta(days=1)
+    _session(db_session, day)
+    rows = trends.nightly_summaries(db_session, days=7, use_cache=False)
+    assert len(rows) == 1

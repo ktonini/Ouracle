@@ -226,3 +226,52 @@ extension SyncModelsTests {
         XCTAssertNil(night.lowestSpo2)
     }
 }
+
+extension SyncModelsTests {
+    func testDecodesRingTrends() throws {
+        let json = """
+        {"nights":[
+          {"day":"2026-08-13",
+           "ours":{"deep_minutes":60,"rem_minutes":45,"asleep_minutes":260,
+                   "breath_rate":12.2,"spo2_percent":93.1,
+                   "desaturation_index":0.0,"lowest_hr":66},
+           "theirs":{"deep_minutes":53,"rem_minutes":47,"asleep_minutes":250,
+                     "breath_rate":12.375,"spo2_percent":93.042,
+                     "desaturation_index":null,"lowest_hr":66}}],
+         "agreement":{"breath_rate":{"nights":9,"mean_abs_difference":0.29,"bias":-0.21}}}
+        """
+        let trends = try JSONDecoder().decode(RingTrends.self, from: Data(json.utf8))
+        XCTAssertEqual(trends.nights.count, 1)
+        XCTAssertEqual(trends.nights[0].ours.deepMinutes, 60)
+        XCTAssertEqual(trends.nights[0].theirs.deepMinutes, 53)
+        XCTAssertNil(trends.nights[0].theirs.desaturationIndex)
+        XCTAssertEqual(trends.agreement["breath_rate"]?.nights, 9)
+        XCTAssertEqual(trends.agreement["breath_rate"]?.bias ?? 0, -0.21, accuracy: 0.001)
+    }
+
+    /// A night the ring missed still carries the cloud side; the model must
+    /// not require our figures to be present.
+    func testDecodesANightTheRingMissed() throws {
+        let json = """
+        {"nights":[{"day":"2026-08-07","ours":{},
+                    "theirs":{"deep_minutes":53,"rem_minutes":32}}],
+         "agreement":{}}
+        """
+        let trends = try JSONDecoder().decode(RingTrends.self, from: Data(json.utf8))
+        XCTAssertNil(trends.nights[0].ours.deepMinutes)
+        XCTAssertEqual(trends.nights[0].theirs.remMinutes, 32)
+        XCTAssertTrue(trends.agreement.isEmpty)
+    }
+
+    func testRingTrendMetricKeysMatchTheServer() {
+        XCTAssertEqual(RingTrendMetric.breathRate.key, "breath_rate")
+        XCTAssertEqual(RingTrendMetric.spo2.key, "spo2_percent")
+        XCTAssertEqual(RingTrendMetric.deepMinutes.key, "deep_minutes")
+        XCTAssertEqual(RingTrendMetric.remMinutes.key, "rem_minutes")
+        // Every metric must offer both a label and a unit for the caption.
+        for metric in RingTrendMetric.allCases {
+            XCTAssertFalse(metric.label.isEmpty)
+            XCTAssertFalse(metric.unit.isEmpty)
+        }
+    }
+}
