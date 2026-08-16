@@ -119,3 +119,50 @@ final class SyncModelsTests: XCTestCase {
         XCTAssertNil(response.todayInsights)
     }
 }
+
+extension SyncModelsTests {
+    /// The coverage report is how the app contradicts its own "caught up".
+    func testDecodesRingCoverage() throws {
+        let json = """
+        {"status":"gaps","message":"1 of 10 scored nights have no ring data (1 not worn)",
+         "events":275653,"from":"2026-08-05T08:45:38+00:00","to":"2026-08-15T17:08:49+00:00",
+         "missing_sessions":["2026-08-12"],"unworn_sessions":["2026-08-15"],
+         "unrecoverable_sessions":["2026-08-07"],"largest_gap_hours":22.2,
+         "sessions":[{"day":"2026-08-12","start":"2026-08-12T22:00:00+00:00",
+                      "end":"2026-08-13T05:00:00+00:00","labels":64,
+                      "covered_fraction":0.0,"present_fraction":0.0,
+                      "state":"missing","covered":false,"counted":true}]}
+        """
+        let coverage = try JSONDecoder().decode(RingCoverage.self, from: Data(json.utf8))
+        XCTAssertFalse(coverage.isHealthy)
+        XCTAssertEqual(coverage.missingSessions, ["2026-08-12"])
+        XCTAssertEqual(coverage.unwornSessions, ["2026-08-15"])
+        XCTAssertEqual(coverage.unrecoverableSessions, ["2026-08-07"])
+        XCTAssertEqual(coverage.largestGapHours, 22.2, accuracy: 0.01)
+        XCTAssertEqual(coverage.sessions.first?.state, "missing")
+    }
+
+    func testHealthyCoverageReadsAsHealthy() throws {
+        let json = """
+        {"status":"ok","message":"all 10 scored nights accounted for","events":1,
+         "sessions":[],"missing_sessions":[],"unworn_sessions":[],
+         "unrecoverable_sessions":[],"largest_gap_hours":0.0}
+        """
+        let coverage = try JSONDecoder().decode(RingCoverage.self, from: Data(json.utf8))
+        XCTAssertTrue(coverage.isHealthy)
+    }
+
+    /// A learned model and a set of hand-tuned rules are not the same claim,
+    /// and neither is Oura's scoring.
+    func testProvenanceDistinguishesTheModelFromTheRules() {
+        let model = stagingProvenance("ouracle-model-v1")
+        let rules = stagingProvenance("ouracle-local-v1")
+        XCTAssertTrue(model.contains("learned"))
+        XCTAssertTrue(model.contains("sequence"))
+        XCTAssertTrue(rules.contains("fixed rules"))
+        XCTAssertNotEqual(model, rules)
+        for text in [model, rules] {
+            XCTAssertFalse(text.contains("Oura's model"))
+        }
+    }
+}

@@ -100,7 +100,7 @@ struct DayDetailView: View {
                         stat("REM", "\(summary.remMinutes)m")
                         stat("Awake", "\(summary.awakeMinutes)m")
                     }
-                    Text("Derived on your server from the ring's movement, heart rate and variability — an approximation, not Oura's model.")
+                    Text(stagingProvenance(summary.method))
                         .font(.caption2)
                         .foregroundStyle(.secondary)
                 }
@@ -348,6 +348,25 @@ struct DayDetailView: View {
 
 /// Hypnogram for locally derived stages, drawn like the cloud one so the two
 /// can be compared at a glance.
+/// Says which staging produced these numbers. They are not Oura's, and a
+/// learned model and a set of hand-tuned rules are not the same claim.
+func stagingProvenance(_ method: String) -> String {
+    switch method {
+    case "ouracle-model-v1":
+        return """
+            Staged on your server by a model learned from Oura's own scoring of \
+            your past nights, then decoded as a sequence rather than epoch by \
+            epoch. Paler bands are lower confidence.
+            """
+    default:
+        return """
+            Derived on your server from the ring's movement, heart rate and \
+            variability using fixed rules — an approximation, and weaker than \
+            the learned model, which needs a few scored nights to train on.
+            """
+    }
+}
+
 struct RingHypnogram: View {
     let stages: [RingNight.Stage]
 

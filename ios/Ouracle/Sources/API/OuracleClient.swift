@@ -127,6 +127,11 @@ struct OuracleClient {
         )
     }
 
+    /// Whether every night Oura scored actually has ring data behind it.
+    func ringCoverage() async throws -> RingCoverage {
+        try await get("api/mobile/ring-coverage")
+    }
+
     func registerPushToken(_ token: String, deviceName: String) async throws {
         struct Body: Encodable {
             let token: String

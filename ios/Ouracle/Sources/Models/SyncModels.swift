@@ -258,6 +258,46 @@ struct SleepSessionDetail: Codable, Equatable, Identifiable {
 }
 
 /// A night reconstructed from events read directly off the ring.
+/// What the server holds against what Oura says exists. The drain can report
+/// itself caught up while nights are missing, so this is the honest answer.
+struct RingCoverage: Codable, Equatable {
+    struct Session: Codable, Equatable, Identifiable {
+        let day: String
+        let labels: Int
+        let coveredFraction: Double
+        let presentFraction: Double
+        /// covered | not_worn | missing | unrecoverable
+        let state: String
+        let counted: Bool
+        var id: String { day + state }
+
+        enum CodingKeys: String, CodingKey {
+            case day, labels, state, counted
+            case coveredFraction = "covered_fraction"
+            case presentFraction = "present_fraction"
+        }
+    }
+
+    let status: String
+    let message: String
+    let events: Int
+    let sessions: [Session]
+    let missingSessions: [String]
+    let unwornSessions: [String]
+    let unrecoverableSessions: [String]
+    let largestGapHours: Double
+
+    var isHealthy: Bool { status == "ok" }
+
+    enum CodingKeys: String, CodingKey {
+        case status, message, events, sessions
+        case missingSessions = "missing_sessions"
+        case unwornSessions = "unworn_sessions"
+        case unrecoverableSessions = "unrecoverable_sessions"
+        case largestGapHours = "largest_gap_hours"
+    }
+}
+
 struct RingNight: Codable, Equatable {
     struct Point: Codable, Equatable, Identifiable {
         let t: String

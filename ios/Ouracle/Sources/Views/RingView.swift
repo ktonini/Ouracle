@@ -5,6 +5,7 @@ import SwiftUI
 struct RingView: View {
     @EnvironmentObject var store: AppStore
     @State private var historyState: OuracleClient.RingSyncState?
+    @State private var coverage: RingCoverage?
     @State private var historyStatus: String?
     @State private var syncing = false
     @State private var battery: RingBattery?
@@ -34,6 +35,7 @@ struct RingView: View {
         .navigationBarTitleDisplayMode(.inline)
         .task {
             historyState = try? await store.client?.ringSyncState()
+            coverage = try? await store.client?.ringCoverage()
             if keySaved, battery == nil { await refreshBattery() }
         }
     }
@@ -124,6 +126,23 @@ struct RingView: View {
                             }
                         }
                     }
+                }
+            }
+            if let coverage {
+                LabeledContent("Nights covered") {
+                    HStack(spacing: 6) {
+                        Image(systemName: coverage.isHealthy
+                            ? "checkmark.circle.fill" : "exclamationmark.triangle.fill")
+                            .foregroundStyle(coverage.isHealthy ? .green : .orange)
+                        Text(coverage.message)
+                            .multilineTextAlignment(.trailing)
+                    }
+                    .font(.footnote)
+                }
+                if !coverage.missingSessions.isEmpty {
+                    Text("Missing: \(coverage.missingSessions.joined(separator: ", "))")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
                 }
             }
             if let historyStatus {
