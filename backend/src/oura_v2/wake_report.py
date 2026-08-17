@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import argparse
 import logging
+import os
 import sys
 from datetime import date, datetime, timedelta, timezone
 from typing import List, Optional
@@ -54,6 +55,39 @@ MIN_RING_SLEEP_MINUTES = 180
 
 def _fmt_duration(seconds: int) -> str:
     return f"{seconds // 3600}h {seconds % 3600 // 60:02d}m"
+
+
+def timezone_warning(
+    tz_env: Optional[str], offset: Optional[timedelta]
+) -> Optional[str]:
+    """Whether this process will silently report UTC clock times.
+
+    Every clock time in a report is a naive-UTC value converted with
+    `astimezone()`, and "which day is it" uses the local date. With no zone
+    configured both resolve to UTC — the report is still sent, still looks
+    well-formed, and is simply hours out.
+
+    A machine with a real local zone is fine even without TZ set; a container,
+    which has neither, is not.
+    """
+    if tz_env:
+        return None
+    if offset not in (None, timedelta(0)):
+        return None
+    return (
+        "TZ is not set, so times will be reported in UTC. Set TZ (e.g. "
+        "TZ=America/Los_Angeles) in the environment file."
+    )
+
+
+def warn_if_timezone_is_unset() -> Optional[str]:
+    """Log the above for the environment this process is actually running in."""
+    message = timezone_warning(
+        os.environ.get("TZ"), datetime.now().astimezone().utcoffset()
+    )
+    if message:
+        logger.warning(message)
+    return message
 
 
 def _fmt_clock(dt: Optional[datetime]) -> Optional[str]:
@@ -232,6 +266,7 @@ def main(argv: Optional[List[str]] = None) -> int:
     args = parser.parse_args(argv)
 
     logging.basicConfig(level=logging.INFO, format="%(levelname)s:%(name)s:%(message)s")
+    warn_if_timezone_is_unset()
 
     from ..database import SessionLocal, init_db
 

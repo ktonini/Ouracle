@@ -174,3 +174,54 @@ def test_ring_report_is_none_without_ring_data(monkeypatch):
         lambda db, start, end: {"error": "no time_sync events"},
     )
     assert wake_report.ring_report_for_day(None, date(2026, 8, 16)) is None
+
+
+def test_warns_when_nothing_gives_a_local_timezone():
+    """Deployed without TZ, every reported time was silently UTC — a report
+    that looks well-formed and is hours out."""
+    from datetime import timedelta
+
+    from backend.src.oura_v2.wake_report import timezone_warning
+
+    assert timezone_warning(None, timedelta(0)) is not None
+    assert timezone_warning("", timedelta(0)) is not None
+    assert timezone_warning(None, None) is not None
+
+
+def test_no_warning_when_a_zone_is_configured_or_inherited():
+    from datetime import timedelta
+
+    from backend.src.oura_v2.wake_report import timezone_warning
+
+    # Explicitly configured.
+    assert timezone_warning("America/Los_Angeles", timedelta(0)) is None
+    # No TZ, but the machine has a real local zone — a dev laptop, not a
+    # container, and nothing to warn about.
+    assert timezone_warning(None, timedelta(hours=-7)) is None
+
+
+def test_ring_report_uses_local_time(monkeypatch):
+    """The symptom that surfaced this: a night reported at UTC clock times."""
+    import time
+
+    from backend.src.oura_v2 import wake_report
+
+    monkeypatch.setenv("TZ", "America/Los_Angeles")
+    time.tzset()
+
+    staged = _staged("d" * 24 + "r" * 12 + "l" * 24)
+    monkeypatch.setattr(
+        "backend.src.ring_events.night.build_night",
+        lambda db, start, end: {"heart_rate": [{"t": "x", "value": 60}], "lowest_hr": 58},
+    )
+    monkeypatch.setattr(
+        "backend.src.ring_events.staging.build_epochs", lambda *a, **k: ["epoch"]
+    )
+    monkeypatch.setattr(
+        "backend.src.ring_events.staging.stage_epochs", lambda epochs: staged
+    )
+
+    message = wake_report.ring_report_for_day(None, date(2026, 8, 16))
+    # The block starts 05:00 UTC, which is 10:00 PM the previous day in PDT.
+    assert "10:00 PM" in message
+    assert "5:00 AM" not in message
