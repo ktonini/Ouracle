@@ -272,3 +272,43 @@ def test_emission_weight_is_persisted_and_applied():
     blob = forest.to_json()
     del blob["emission_weight"]
     assert Forest.from_json(blob).emission_weight == DEFAULT_EMISSION_WEIGHT
+
+
+def test_class_weight_power_trades_recall_for_calibration():
+    """At 1.0 every class counts equally, which finds rare stages but predicts
+    them more often than they occur. Lowering it pulls predictions back toward
+    the natural frequencies."""
+    from backend.src.ring_events.model import STAGES, featurise_night, fit
+
+    # A night dominated by light, with REM genuinely rare.
+    rows, labels = [], []
+    for index in range(120):
+        stage = "rem" if index % 12 == 0 else "light"
+        rows.append({
+            "heart_rate": 68.0 if stage == "rem" else 62.0,
+            "movement": 0.02, "movement_peak": 0.05, "temperature": 34.0,
+            "hrv": 30.0, "sdnn_rmssd": 2.4 if stage == "rem" else 1.1,
+            "pnn50": 0.1, "breath_irregularity": 0.3,
+        })
+        labels.append(stage)
+    features = featurise_night(rows)
+
+    def rem_predicted(power):
+        forest = fit(features, labels, trees=20, class_weight_power=power)
+        return sum(1 for f in features if forest.predict(f) == "rem")
+
+    actual = labels.count("rem")
+    assert rem_predicted(1.0) >= rem_predicted(0.0)
+    # Equal weighting must not *under*-predict the rare class.
+    assert rem_predicted(1.0) >= actual
+
+
+def test_the_shipped_defaults_are_the_swept_ones():
+    """These were chosen from a sweep for a flat region, not a peak; changing
+    one without the other re-opens the bias the pair was picked to remove."""
+    from backend.src.ring_events.model import (
+        DEFAULT_CLASS_WEIGHT_POWER, DEFAULT_EMISSION_WEIGHT,
+    )
+
+    assert DEFAULT_CLASS_WEIGHT_POWER == 0.85
+    assert DEFAULT_EMISSION_WEIGHT == 8.0

@@ -34,14 +34,27 @@ STAGES = ["deep", "light", "rem", "awake"]
 # land within a point), not a knife edge, but it was picked on the same
 # cross-validation reported elsewhere, so treat that number as mildly
 # optimistic.
-DEFAULT_EMISSION_WEIGHT = 4.0
+#
+# Raised to 8.0 alongside the class-weight change below; the two were swept
+# together, and 7.0 scores the same within noise.
+DEFAULT_EMISSION_WEIGHT = 8.0
 
 # How hard to correct for rare stages. 1.0 makes every class count equally,
 # which stops the model answering "light" everywhere but overshoots the other
 # way: it predicts rare stages more often than they occur. 0.0 leaves the
 # natural frequencies alone. Anywhere between trades recall against
 # calibration.
-DEFAULT_CLASS_WEIGHT_POWER = 1.0
+#
+# At 1.0 the model reported REM about 6 minutes a night too high and light 28
+# too low — invisible in per-epoch accuracy, which counts errors in both
+# directions equally, but plain against the cloud's own nightly totals.
+#
+# 0.85 was picked from a 30-cell sweep because REM's lean is flat there, not
+# because one cell scored well: across emission weights 5, 6, 7, 8 and 10 it
+# reads +1, -2, -1, -1, +2. At 0.75 the same metric swings from -10 to -2
+# between two adjacent cells, which is a knife edge and was rejected. The cost
+# is 0.002 accuracy and 0.009 balanced accuracy.
+DEFAULT_CLASS_WEIGHT_POWER = 0.85
 
 # Raw per-epoch signals, as they arrive from the ring.
 RAW_FEATURES = [
