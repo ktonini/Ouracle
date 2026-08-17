@@ -21,7 +21,7 @@ from typing import Any, Dict, List, Optional
 from sqlalchemy.orm import Session
 
 from ..paths import get_user_data_dir
-from .training import _by_night, build_dataset, train_model
+from .training import _by_night, build_dataset, model_config, train_model
 
 logger = logging.getLogger("RingRetrain")
 
@@ -47,7 +47,13 @@ def retrain(db: Session, force: bool = False) -> Dict[str, Any]:
     nights = sorted(_by_night(dataset))
     meta = installed_meta()
 
-    if not force and meta.get("nights") == nights and meta.get("epochs") == len(dataset):
+    unchanged = (
+        meta.get("nights") == nights
+        and meta.get("epochs") == len(dataset)
+        # A tuning change must retrain even when the data has not moved.
+        and meta.get("config") == model_config()
+    )
+    if not force and unchanged:
         return {
             "trained": False,
             "reason": "no new nights since the last fit",

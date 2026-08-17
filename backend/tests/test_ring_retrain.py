@@ -160,3 +160,18 @@ def test_force_overrides_the_guard(data_dir, monkeypatch):
 def test_installed_meta_survives_a_corrupt_model(data_dir):
     (data_dir / "sleep_model.json").write_text("not json")
     assert installed_meta() == {}
+
+
+def test_a_tuning_change_retrains_even_with_no_new_nights(data_dir, monkeypatch):
+    """Otherwise a parameter change is silently ignored: the nights have not
+    moved, so nothing looks stale and the old model keeps serving."""
+    from backend.src.ring_events import model
+
+    _patch_dataset(monkeypatch, _dataset(["2026-08-05", "2026-08-06", "2026-08-07"]))
+    assert retrain(None)["trained"] is True
+    assert retrain(None)["trained"] is False  # nothing new, as expected
+
+    monkeypatch.setattr(model, "DEFAULT_CLASS_WEIGHT_POWER", 0.5)
+    result = retrain(None)
+    assert result["trained"] is True
+    assert installed_meta()["config"]["class_weight_power"] == 0.5

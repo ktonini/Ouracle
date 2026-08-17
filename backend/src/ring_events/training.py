@@ -169,6 +169,22 @@ def evaluate_heuristic(db: Session) -> Dict[str, Any]:
     }
 
 
+def model_config() -> Dict[str, Any]:
+    """What the fit depends on besides the data.
+
+    Recorded with the model so that changing a tuning constant retrains on the
+    next run. Without this a parameter change is silently ignored — the nights
+    have not changed, so nothing looks stale.
+    """
+    from .model import DEFAULT_CLASS_WEIGHT_POWER, DEFAULT_EMISSION_WEIGHT, FEATURES
+
+    return {
+        "emission_weight": DEFAULT_EMISSION_WEIGHT,
+        "class_weight_power": DEFAULT_CLASS_WEIGHT_POWER,
+        "features": list(FEATURES),
+    }
+
+
 def _by_night(dataset: List[Dict[str, Any]]) -> Dict[str, List[Dict[str, Any]]]:
     nights: Dict[str, List[Dict[str, Any]]] = {}
     for row in dataset:
@@ -333,6 +349,7 @@ def train_model(
         "trained_at": datetime.now(timezone.utc).isoformat(),
         "nights": sorted(nights),
         "epochs": len(samples),
+        "config": model_config(),
         "balanced": fresh,
         "accuracy": (scores.get("model") or {}).get("accuracy"),
         "baseline_balanced": baseline,
