@@ -175,3 +175,66 @@ def test_a_tuning_change_retrains_even_with_no_new_nights(data_dir, monkeypatch)
     result = retrain(None)
     assert result["trained"] is True
     assert installed_meta()["config"]["class_weight_power"] == 0.5
+
+
+def test_a_better_calibrated_fit_is_accepted_despite_lower_recall(data_dir, monkeypatch):
+    """Recall and nightly totals are different things. A fit that trades one
+    for the other on purpose must not be blocked by a guard that only watches
+    recall — that would freeze in whichever trade happened to ship first."""
+    from backend.src.ring_events import training
+
+    _patch_dataset(monkeypatch, _dataset(["2026-08-05", "2026-08-06", "2026-08-07"]))
+    monkeypatch.setattr(
+        training, "cross_validate",
+        lambda db, dataset=None: {
+            "nights": 3,
+            "model": {"balanced": 0.72, "accuracy": 0.70, "mean_abs_bias": 18.0},
+            "majority": {"balanced": 0.25, "accuracy": 0.45},
+        },
+    )
+    assert retrain(None)["trained"] is True
+    assert installed_meta()["mean_abs_bias"] == 18.0
+
+    # Much worse recall, but the nightly totals are far closer.
+    _patch_dataset(
+        monkeypatch, _dataset(["2026-08-05", "2026-08-06", "2026-08-07", "2026-08-08"])
+    )
+    monkeypatch.setattr(
+        training, "cross_validate",
+        lambda db, dataset=None: {
+            "nights": 4,
+            "model": {"balanced": 0.60, "accuracy": 0.65, "mean_abs_bias": 4.0},
+            "majority": {"balanced": 0.25, "accuracy": 0.45},
+        },
+    )
+    assert retrain(None)["trained"] is True
+
+
+def test_a_fit_worse_at_both_is_still_refused(data_dir, monkeypatch):
+    from backend.src.ring_events import training
+
+    _patch_dataset(monkeypatch, _dataset(["2026-08-05", "2026-08-06", "2026-08-07"]))
+    monkeypatch.setattr(
+        training, "cross_validate",
+        lambda db, dataset=None: {
+            "nights": 3,
+            "model": {"balanced": 0.72, "accuracy": 0.70, "mean_abs_bias": 8.0},
+            "majority": {"balanced": 0.25, "accuracy": 0.45},
+        },
+    )
+    retrain(None)
+
+    _patch_dataset(
+        monkeypatch, _dataset(["2026-08-05", "2026-08-06", "2026-08-07", "2026-08-08"])
+    )
+    monkeypatch.setattr(
+        training, "cross_validate",
+        lambda db, dataset=None: {
+            "nights": 4,
+            "model": {"balanced": 0.60, "accuracy": 0.65, "mean_abs_bias": 20.0},
+            "majority": {"balanced": 0.25, "accuracy": 0.45},
+        },
+    )
+    result = retrain(None)
+    assert result["trained"] is False
+    assert "worse than the installed" in result["reason"]

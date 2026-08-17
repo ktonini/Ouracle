@@ -35,9 +35,9 @@ STAGES = ["deep", "light", "rem", "awake"]
 # cross-validation reported elsewhere, so treat that number as mildly
 # optimistic.
 #
-# Raised to 8.0 alongside the class-weight change below; the two were swept
-# together, and 7.0 scores the same within noise.
-DEFAULT_EMISSION_WEIGHT = 8.0
+# Now 4.5, swept jointly with the class weight below: the two trade against
+# each other, so neither can be chosen alone.
+DEFAULT_EMISSION_WEIGHT = 4.5
 
 # How hard to correct for rare stages. 1.0 makes every class count equally,
 # which stops the model answering "light" everywhere but overshoots the other
@@ -49,12 +49,17 @@ DEFAULT_EMISSION_WEIGHT = 8.0
 # too low — invisible in per-epoch accuracy, which counts errors in both
 # directions equally, but plain against the cloud's own nightly totals.
 #
-# 0.85 was picked from a 30-cell sweep because REM's lean is flat there, not
-# because one cell scored well: across emission weights 5, 6, 7, 8 and 10 it
-# reads +1, -2, -1, -1, +2. At 0.75 the same metric swings from -10 to -2
-# between two adjacent cells, which is a knife edge and was rejected. The cost
-# is 0.002 accuracy and 0.009 balanced accuracy.
-DEFAULT_CLASS_WEIGHT_POWER = 0.85
+# 0.84 with emission 4.5 sits in the middle of a region where every stage's
+# lean is small — the neighbouring cells (0.84 at 4.0 and 5.0, 0.82 at 4.5 and
+# 5.0) all hold deep within 1 minute, light within 6 and REM within 2. That
+# neighbourhood is why this point was chosen rather than the single cell with
+# the best numbers.
+#
+# It costs recall: balanced accuracy falls from 0.701 to about 0.669. The
+# trade is deliberate. Per-class recall and nightly totals are different
+# things, and a hypnogram that reports the right number of minutes is worth
+# more here than one that labels marginally more epochs correctly.
+DEFAULT_CLASS_WEIGHT_POWER = 0.84
 
 # Raw per-epoch signals, as they arrive from the ring.
 RAW_FEATURES = [

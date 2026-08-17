@@ -218,6 +218,11 @@ def _score(
     }
     return {
         "minutes_bias": bias,
+        # One number for "how wrong are the nightly totals", so calibration can
+        # be compared between fits the way accuracy already is.
+        "mean_abs_bias": round(
+            sum(abs(v) for v in bias.values()) / max(len(bias), 1), 2
+        ),
         "epochs": len(actual),
         "accuracy": round(correct / len(actual), 3) if actual else None,
         "confusion": confusion,
@@ -317,6 +322,7 @@ def train_model(
 
     scores = cross_validate(db, dataset=rows)
     fresh = (scores.get("model") or {}).get("balanced")
+    fresh_bias = (scores.get("model") or {}).get("mean_abs_bias")
     baseline = (scores.get("majority") or {}).get("balanced")
     path = get_user_data_dir() / "sleep_model.json"
 
@@ -335,8 +341,17 @@ def train_model(
                 "scores": scores,
             }
         was = (previous or {}).get("balanced")
-        # A little movement between fits is normal; a real drop is not.
-        if was is not None and fresh < was - 0.05:
+        was_bias = (previous or {}).get("mean_abs_bias")
+        # A little movement between fits is normal; a real drop is not — but
+        # recall is not the only thing that matters. A fit that reports the
+        # nightly totals better has bought that with recall on purpose, and
+        # refusing it would freeze in whichever trade happened to ship first.
+        calibration_improved = (
+            was_bias is not None
+            and fresh_bias is not None
+            and fresh_bias < was_bias
+        )
+        if was is not None and fresh < was - 0.05 and not calibration_improved:
             return {
                 "trained": False,
                 "reason": f"balanced {fresh} is worse than the installed {was}",
@@ -351,6 +366,7 @@ def train_model(
         "epochs": len(samples),
         "config": model_config(),
         "balanced": fresh,
+        "mean_abs_bias": fresh_bias,
         "accuracy": (scores.get("model") or {}).get("accuracy"),
         "baseline_balanced": baseline,
     }

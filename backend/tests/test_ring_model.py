@@ -310,5 +310,5 @@ def test_the_shipped_defaults_are_the_swept_ones():
         DEFAULT_CLASS_WEIGHT_POWER, DEFAULT_EMISSION_WEIGHT,
     )
 
-    assert DEFAULT_CLASS_WEIGHT_POWER == 0.85
-    assert DEFAULT_EMISSION_WEIGHT == 8.0
+    assert DEFAULT_CLASS_WEIGHT_POWER == 0.84
+    assert DEFAULT_EMISSION_WEIGHT == 4.5
