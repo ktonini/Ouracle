@@ -225,3 +225,57 @@ def test_ring_report_uses_local_time(monkeypatch):
     # The block starts 05:00 UTC, which is 10:00 PM the previous day in PDT.
     assert "10:00 PM" in message
     assert "5:00 AM" not in message
+
+
+def _fake_night(monkeypatch, staged_for):
+    """Stub the ring pipeline, letting the staged night depend on how many
+    hours of lookback were asked for."""
+    seen: list = []
+
+    def build_night(db, start, end):
+        seen.append(round((end - start).total_seconds() / 3600))
+        return {"heart_rate": [{"t": "x", "value": 60}], "lowest_hr": 58}
+
+    monkeypatch.setattr("backend.src.ring_events.night.build_night", build_night)
+    monkeypatch.setattr(
+        "backend.src.ring_events.staging.build_epochs", lambda *a, **k: ["epoch"]
+    )
+    monkeypatch.setattr(
+        "backend.src.ring_events.staging.stage_epochs",
+        lambda epochs: staged_for(seen[-1]),
+    )
+    return seen
+
+
+def test_a_block_reaching_the_window_edge_widens_the_lookback(monkeypatch):
+    """A 30-hour window clipped a night that began at 8:35am and reported three
+    hours instead of six — and the duration is what the notification leads
+    with."""
+    from backend.src.oura_v2 import wake_report
+
+    seen = _fake_night(
+        monkeypatch,
+        lambda hours: _staged("d" * 40) if hours <= 48 else _staged("a" * 5 + "d" * 72),
+    )
+    message = wake_report.ring_report_for_day(None, date(2026, 8, 16))
+
+    assert seen == [wake_report.RING_LOOKBACK_HOURS, wake_report.RING_LOOKBACK_RETRY_HOURS]
+    assert "You slept 6h 00m" in message   # not the clipped 3h 20m
+
+
+def test_a_block_clear_of_the_edge_is_not_re_derived(monkeypatch):
+    from backend.src.oura_v2 import wake_report
+
+    seen = _fake_night(monkeypatch, lambda hours: _staged("a" * 6 + "d" * 48))
+    message = wake_report.ring_report_for_day(None, date(2026, 8, 16))
+
+    assert seen == [wake_report.RING_LOOKBACK_HOURS]
+    assert "You slept 4h 00m" in message
+
+
+def test_a_still_clipped_wider_window_reports_what_it_has(monkeypatch):
+    """Better a short night than none — the ring may genuinely start there."""
+    from backend.src.oura_v2 import wake_report
+
+    _fake_night(monkeypatch, lambda hours: _staged("d" * 40))
+    assert "You slept 3h 20m" in wake_report.ring_report_for_day(None, date(2026, 8, 16))

@@ -47,7 +47,15 @@ MIN_SESSION_SECONDS = 60 * 60
 # Ring-derived fallback. Looked for over this many hours back from now, so it
 # works whatever hours you keep — a fixed evening-to-morning window assumes a
 # schedule, and gets it wrong for anyone sleeping across UTC midday.
-RING_LOOKBACK_HOURS = 30
+#
+# It must comfortably contain the whole of the last sleep however late the
+# report runs. At 30 hours it did not: a report at 5pm looked back only to
+# noon the day before, so a night that began at 8:35am was clipped and read as
+# three hours instead of six.
+RING_LOOKBACK_HOURS = 48
+# If the block still reaches the start of the window it is probably cut off,
+# so try once more with a wider one rather than report a truncated night.
+RING_LOOKBACK_RETRY_HOURS = 84
 # A block this long is a night. Shorter is a nap, and not what the morning
 # report is for.
 MIN_RING_SLEEP_MINUTES = 180
@@ -169,17 +177,14 @@ def _longest_recent_sleep(staged: List[dict]) -> List[dict]:
     return long_enough[-1] if long_enough else []
 
 
-def ring_report_for_day(db: Session, day: date) -> Optional[str]:
-    """A report built from the ring alone, for when Oura hasn't scored yet.
-
-    The whole point of reading the ring directly is not depending on their
-    pipeline; a morning push that waits for their scoring still does.
-    """
-    from ..ring_events.staging import EPOCH_MINUTES, build_epochs, stage_epochs
+def _staged_block(db: Session, hours: int) -> Optional[tuple]:
+    """The most recent sleep block within `hours`, plus its night and whether
+    it starts at the very edge of the window."""
+    from ..ring_events.staging import build_epochs, stage_epochs
     from ..ring_events.night import build_night
 
     end = datetime.now(timezone.utc).replace(tzinfo=None)
-    start = end - timedelta(hours=RING_LOOKBACK_HOURS)
+    start = end - timedelta(hours=hours)
     night = build_night(db, start, end)
     if night.get("error") or not night.get("heart_rate"):
         return None
@@ -197,6 +202,29 @@ def ring_report_for_day(db: Session, day: date) -> Optional[str]:
     block = _longest_recent_sleep(staged)
     if not block:
         return None
+    # Within an epoch of the first thing we staged: the sleep probably began
+    # before the window did.
+    clipped = bool(staged) and block[0]["t"] <= staged[0]["t"]
+    return block, night, clipped
+
+
+def ring_report_for_day(db: Session, day: date) -> Optional[str]:
+    """A report built from the ring alone, for when Oura hasn't scored yet.
+
+    The whole point of reading the ring directly is not depending on their
+    pipeline; a morning push that waits for their scoring still does.
+    """
+    from ..ring_events.staging import EPOCH_MINUTES
+
+    found = _staged_block(db, RING_LOOKBACK_HOURS)
+    if found and found[2]:
+        # Reported duration would be short by however much fell outside the
+        # window, which is exactly the number the notification leads with.
+        logger.info("sleep block reached the window edge; widening the lookback")
+        found = _staged_block(db, RING_LOOKBACK_RETRY_HOURS) or found
+    if not found:
+        return None
+    block, night, _ = found
 
     minutes: dict = {}
     for epoch in block:
